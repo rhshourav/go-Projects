@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -9,110 +10,74 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/charmbracelet/bubbles/progress"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
-const (
-	baseURL     = "https://raw.githubusercontent.com/rhshourav/ideal-fishstick/refs/heads/main/SystemPE-Test"
-	totalParts  = 113
-	threadCount = 32
-	retryCount  = 5
-)
+type Config struct {
+	Author       string `json:"author"`
+	Github       string `json:"github"`
+	BaseURL      string `json:"base_url"`
+	DownloadPath string `json:"download_path"`
+	Threads      int    `json:"threads"`
+	RetryCount   int    `json:"retry_count"`
+	TotalParts   int    `json:"total_parts"`
+}
 
-type FileJob struct {
-	Name string
-	URL  string
+type model struct {
+	progress progress.Model
+	percent  float64
+	speed    float64
+	done     int
+	total    int
 }
 
 var totalDownloaded int64
 
-func main() {
+func loadConfig() Config {
 
-	downloadPath := "SystemPE"
-	os.MkdirAll(downloadPath, os.ModePerm)
-
-	files := generateFiles()
-
-	jobs := make(chan FileJob, len(files))
-	var wg sync.WaitGroup
-
-	for i := 0; i < threadCount; i++ {
-		wg.Add(1)
-		go worker(downloadPath, jobs, &wg)
+	file, err := os.Open("config.json")
+	if err != nil {
+		panic(err)
 	}
 
-	for _, f := range files {
-		jobs <- f
-	}
+	defer file.Close()
 
-	close(jobs)
-	wg.Wait()
+	var cfg Config
+	json.NewDecoder(file).Decode(&cfg)
 
-	fmt.Println("\nAll downloads finished")
+	return cfg
 }
 
-func generateFiles() []FileJob {
+func generateFiles(cfg Config) []string {
 
-	var files []FileJob
+	files := []string{"SystemPE.part001.exe"}
 
-	files = append(files, FileJob{
-		Name: "SystemPE.part001.exe",
-		URL:  baseURL + "/SystemPE.part001.exe",
-	})
-
-	for i := 2; i <= totalParts; i++ {
+	for i := 2; i <= cfg.TotalParts; i++ {
 
 		name := fmt.Sprintf("SystemPE.part%03d.rar", i)
-
-		files = append(files, FileJob{
-			Name: name,
-			URL:  baseURL + "/" + name,
-		})
+		files = append(files, name)
 	}
 
 	return files
 }
 
-func worker(path string, jobs <-chan FileJob, wg *sync.WaitGroup) {
+func downloadFile(cfg Config, name string) error {
 
-	defer wg.Done()
+	url := cfg.BaseURL + "/" + name
+	path := filepath.Join(cfg.DownloadPath, name)
 
-	for job := range jobs {
+	var start int64
 
-		for attempt := 1; attempt <= retryCount; attempt++ {
-
-			err := downloadFile(path, job)
-
-			if err == nil {
-				break
-			}
-
-			fmt.Println("Retry", job.Name, "attempt", attempt)
-			time.Sleep(time.Second * time.Duration(attempt))
-		}
-	}
-}
-
-func downloadFile(path string, job FileJob) error {
-
-	filePath := filepath.Join(path, job.Name)
-
-	var start int64 = 0
-
-	if info, err := os.Stat(filePath); err == nil {
+	if info, err := os.Stat(path); err == nil {
 		start = info.Size()
 	}
 
-	client := &http.Client{
-		Timeout: 0,
-	}
+	client := &http.Client{}
 
-	req, err := http.NewRequest("GET", job.URL, nil)
-	if err != nil {
-		return err
-	}
-
-	req.Header.Set("User-Agent", "GoDownloader")
-	req.Header.Set("Connection", "keep-alive")
+	req, _ := http.NewRequest("GET", url, nil)
 
 	if start > 0 {
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", start))
@@ -128,21 +93,14 @@ func downloadFile(path string, job FileJob) error {
 	var file *os.File
 
 	if start > 0 {
-		file, err = os.OpenFile(filePath, os.O_APPEND|os.O_WRONLY, 0644)
+		file, _ = os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
 	} else {
-		file, err = os.Create(filePath)
-	}
-
-	if err != nil {
-		return err
+		file, _ = os.Create(path)
 	}
 
 	defer file.Close()
 
-	buf := make([]byte, 32*1024)
-
-	startTime := time.Now()
-	var downloaded int64 = start
+	buf := make([]byte, 32768)
 
 	for {
 
@@ -151,24 +109,7 @@ func downloadFile(path string, job FileJob) error {
 		if n > 0 {
 
 			file.Write(buf[:n])
-
-			downloaded += int64(n)
-
 			atomic.AddInt64(&totalDownloaded, int64(n))
-
-			elapsed := time.Since(startTime).Seconds()
-
-			if elapsed > 0 {
-
-				speed := float64(downloaded-start) / elapsed / 1024 / 1024
-
-				fmt.Printf(
-					"\rDownloading %-25s %.2f MB  Speed: %.2f MB/s",
-					job.Name,
-					float64(downloaded)/1024/1024,
-					speed,
-				)
-			}
 		}
 
 		if err == io.EOF {
@@ -180,7 +121,121 @@ func downloadFile(path string, job FileJob) error {
 		}
 	}
 
-	fmt.Println("\nCompleted", job.Name)
-
 	return nil
+}
+
+func worker(cfg Config, jobs <-chan string, wg *sync.WaitGroup) {
+
+	defer wg.Done()
+
+	for name := range jobs {
+
+		for i := 0; i < cfg.RetryCount; i++ {
+
+			err := downloadFile(cfg, name)
+
+			if err == nil {
+				break
+			}
+
+			time.Sleep(time.Second)
+		}
+	}
+}
+
+func startDownload(cfg Config) {
+
+	os.MkdirAll(cfg.DownloadPath, os.ModePerm)
+
+	files := generateFiles(cfg)
+
+	jobs := make(chan string, len(files))
+
+	var wg sync.WaitGroup
+
+	for i := 0; i < cfg.Threads; i++ {
+
+		wg.Add(1)
+		go worker(cfg, jobs, &wg)
+	}
+
+	for _, f := range files {
+		jobs <- f
+	}
+
+	close(jobs)
+
+	wg.Wait()
+}
+
+func initialModel(total int) model {
+
+	p := progress.New(progress.WithDefaultGradient())
+
+	return model{
+		progress: p,
+		total:    total,
+	}
+}
+
+func (m model) Init() tea.Cmd {
+	return tick()
+}
+
+func tick() tea.Cmd {
+
+	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
+		return t
+	})
+}
+
+func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+
+	switch msg.(type) {
+
+	case time.Time:
+
+		speed := float64(atomic.LoadInt64(&totalDownloaded)) / 1024 / 1024
+
+		m.speed = speed
+
+		if m.percent < 1.0 {
+			m.percent += 0.01
+		}
+
+		return m, tick()
+	}
+
+	return m, nil
+}
+
+func (m model) View() string {
+
+	title := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("63")).
+		Render("SystemPE Downloader")
+
+	info := fmt.Sprintf(
+		"Author: rhshourav\nGitHub: https://github.com/rhshourav\n\nSpeed: %.2f MB/s\n",
+		m.speed,
+	)
+
+	bar := m.progress.ViewAs(m.percent)
+
+	return fmt.Sprintf("\n%s\n\n%s\n%s\n", title, info, bar)
+}
+
+func main() {
+
+	cfg := loadConfig()
+
+	go startDownload(cfg)
+
+	p := tea.NewProgram(initialModel(cfg.TotalParts))
+
+	if err := p.Start(); err != nil {
+		fmt.Println("Error:", err)
+		os.Exit(1)
+	}
 }
