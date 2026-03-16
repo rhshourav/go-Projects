@@ -1,309 +1,471 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	_ "modernc.org/sqlite"
 )
 
 type Config struct {
-	Author       string `json:"author"`
-	Github       string `json:"github"`
-	BaseURL      string `json:"base_url"`
-	DownloadPath string `json:"download_path"`
-	Threads      int    `json:"threads"`
-	RetryCount   int    `json:"retry_count"`
-	TotalParts   int    `json:"total_parts"`
+	BaseURL            string `json:"base_url"`
+	DownloadPath       string `json:"download_path"`
+	ThreadsTotal       int    `json:"threads_total"`
+	SegmentsPerFile    int    `json:"segments_per_file"`
+	ConcurrentFiles    int    `json:"concurrent_files"`
+	MinSegmentSizeMB   int64  `json:"min_segment_size_mb"`
+	RetryCount         int    `json:"retry_count"`
+	HTTPTimeoutSeconds int    `json:"http_timeout_seconds"`
+	HeadTimeoutSeconds int    `json:"head_timeout_seconds"`
+	UIRefreshMs        int    `json:"ui_refresh_ms"`
+	TotalParts         int    `json:"total_parts"`
+	DBPath             string `json:"db_path"`
 }
 
-type FileState struct {
-	Name      string
-	Total     int64
-	Current   int64
-	Completed bool
+func loadConfig() Config {
+
+	f, err := os.Open("config.json")
+	if err != nil {
+		panic(err)
+	}
+
+	defer f.Close()
+
+	cfg := Config{}
+	json.NewDecoder(f).Decode(&cfg)
+
+	if cfg.ThreadsTotal == 0 {
+		cfg.ThreadsTotal = runtime.NumCPU() * 6
+	}
+
+	if cfg.SegmentsPerFile == 0 {
+		cfg.SegmentsPerFile = 4
+	}
+
+	if cfg.ConcurrentFiles == 0 {
+		cfg.ConcurrentFiles = 4
+	}
+
+	if cfg.MinSegmentSizeMB == 0 {
+		cfg.MinSegmentSizeMB = 4
+	}
+
+	if cfg.RetryCount == 0 {
+		cfg.RetryCount = 4
+	}
+
+	if cfg.DBPath == "" {
+		cfg.DBPath = "resume.db"
+	}
+
+	if cfg.UIRefreshMs == 0 {
+		cfg.UIRefreshMs = 300
+	}
+
+	return cfg
 }
 
-type model struct {
-	files    []*FileState
-	spinner  spinner.Model
-	progress progress.Model
-	speed    float64
-	eta      string
-	threads  int
-	history  []float64
+type ResumeDB struct {
+	db *sql.DB
+	mu sync.Mutex
+}
+
+func openDB(path string) *ResumeDB {
+
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		panic(err)
+	}
+
+	r := &ResumeDB{db: db}
+
+	schema := `
+CREATE TABLE IF NOT EXISTS segments(
+file TEXT,
+idx INTEGER,
+completed INTEGER,
+PRIMARY KEY(file,idx)
+);`
+
+	db.Exec(schema)
+
+	return r
+}
+
+func (r *ResumeDB) done(file string, idx int) {
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.db.Exec("INSERT OR REPLACE INTO segments VALUES(?,?,1)", file, idx)
+}
+
+func (r *ResumeDB) completed(file string) map[int]bool {
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	rows, _ := r.db.Query("SELECT idx FROM segments WHERE file=?", file)
+
+	out := map[int]bool{}
+
+	for rows.Next() {
+		var i int
+		rows.Scan(&i)
+		out[i] = true
+	}
+
+	return out
+}
+
+type Segment struct {
+	idx   int
+	start int64
+	end   int64
+}
+
+type FileJob struct {
+	Name string
+	URL  string
+	Size int64
+
+	Segments []Segment
+
+	Downloaded int64
+	DoneSeg    int32
+	Completed  bool
 }
 
 var totalBytes int64
-var prevBytes int64
 
-func loadConfig() Config {
-	f, _ := os.Open("config.json")
-	defer f.Close()
-	var c Config
-	json.NewDecoder(f).Decode(&c)
-	return c
-}
+func httpClient(timeout int) *http.Client {
 
-func generateFiles(cfg Config) []string {
-
-	files := []string{"SystemPE.part001.exe"}
-
-	for i := 2; i <= cfg.TotalParts; i++ {
-		files = append(files, fmt.Sprintf("SystemPE.part%03d.rar", i))
+	tr := &http.Transport{
+		MaxIdleConns:        512,
+		MaxIdleConnsPerHost: 128,
+		IdleConnTimeout:     60 * time.Second,
+		DialContext: (&net.Dialer{
+			Timeout: 20 * time.Second,
+		}).DialContext,
 	}
 
-	return files
+	return &http.Client{
+		Transport: tr,
+		Timeout:   time.Duration(timeout) * time.Second,
+	}
 }
 
-func downloadFile(cfg Config, state *FileState) {
+func probeSize(client *http.Client, url string) int64 {
 
-	url := cfg.BaseURL + "/" + state.Name
-	path := filepath.Join(cfg.DownloadPath, state.Name)
-
-	client := &http.Client{}
-
-	req, _ := http.NewRequest("GET", url, nil)
+	req, _ := http.NewRequest("HEAD", url, nil)
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return
+		return 0
 	}
 
 	defer resp.Body.Close()
 
-	state.Total = resp.ContentLength
+	cl := resp.Header.Get("Content-Length")
 
-	file, _ := os.Create(path)
-	defer file.Close()
+	size, _ := strconv.ParseInt(cl, 10, 64)
 
-	buf := make([]byte, 32768)
-
-	for {
-
-		n, err := resp.Body.Read(buf)
-
-		if n > 0 {
-
-			file.Write(buf[:n])
-
-			state.Current += int64(n)
-
-			atomic.AddInt64(&totalBytes, int64(n))
-		}
-
-		if err == io.EOF {
-			break
-		}
-
-		if err != nil {
-			break
-		}
-	}
-
-	state.Completed = true
+	return size
 }
 
-func worker(cfg Config, jobs <-chan *FileState, wg *sync.WaitGroup) {
+func partition(size int64, cfg Config) []Segment {
 
-	defer wg.Done()
+	min := cfg.MinSegmentSizeMB * 1024 * 1024
 
-	for state := range jobs {
+	segments := cfg.SegmentsPerFile
 
-		for i := 0; i < cfg.RetryCount; i++ {
+	maxAllowed := int(size / min)
 
-			downloadFile(cfg, state)
-
-			if state.Completed {
-				break
-			}
-
-			time.Sleep(time.Second)
-		}
+	if maxAllowed < segments {
+		segments = maxAllowed
 	}
+
+	if segments < 1 {
+		segments = 1
+	}
+
+	block := size / int64(segments)
+
+	var out []Segment
+
+	start := int64(0)
+
+	for i := 0; i < segments; i++ {
+
+		end := start + block - 1
+
+		if i == segments-1 {
+			end = size - 1
+		}
+
+		out = append(out, Segment{i, start, end})
+
+		start = end + 1
+	}
+
+	return out
 }
 
-func startDownloads(cfg Config, states []*FileState) {
+type ProgressReader struct {
+	r       io.Reader
+	counter *int64
+}
 
-	os.MkdirAll(cfg.DownloadPath, os.ModePerm)
+func (p *ProgressReader) Read(b []byte) (int, error) {
 
-	jobs := make(chan *FileState)
+	n, err := p.r.Read(b)
+
+	atomic.AddInt64(p.counter, int64(n))
+	atomic.AddInt64(&totalBytes, int64(n))
+
+	return n, err
+}
+
+func downloadSegment(client *http.Client, job *FileJob, seg Segment, cfg Config, db *ResumeDB) error {
+
+	req, _ := http.NewRequest("GET", job.URL, nil)
+
+	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", seg.start, seg.end))
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+
+	defer resp.Body.Close()
+
+	path := filepath.Join(cfg.DownloadPath, job.Name)
+
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+
+	defer f.Close()
+
+	f.Seek(seg.start, 0)
+
+	pr := &ProgressReader{resp.Body, &job.Downloaded}
+
+	_, err = io.Copy(f, pr)
+	if err != nil {
+		return err
+	}
+
+	db.done(job.Name, seg.idx)
+
+	atomic.AddInt32(&job.DoneSeg, 1)
+
+	return nil
+}
+
+func workerPool(cfg Config, jobs []*FileJob, db *ResumeDB) {
+
+	client := httpClient(cfg.HTTPTimeoutSeconds)
+
+	connSem := make(chan struct{}, cfg.ThreadsTotal)
+	fileSem := make(chan struct{}, cfg.ConcurrentFiles)
 
 	var wg sync.WaitGroup
 
-	for i := 0; i < cfg.Threads; i++ {
+	for _, job := range jobs {
 
 		wg.Add(1)
 
-		go worker(cfg, jobs, &wg)
-	}
+		go func(j *FileJob) {
 
-	for _, s := range states {
-		jobs <- s
-	}
+			defer wg.Done()
 
-	close(jobs)
+			fileSem <- struct{}{}
+			defer func() { <-fileSem }()
+
+			for _, seg := range j.Segments {
+
+				connSem <- struct{}{}
+
+				go func(s Segment) {
+
+					defer func() { <-connSem }()
+
+					for r := 0; r < cfg.RetryCount; r++ {
+
+						err := downloadSegment(client, j, s, cfg, db)
+
+						if err == nil {
+							break
+						}
+
+						time.Sleep(time.Second * time.Duration(r+1))
+					}
+
+				}(seg)
+			}
+
+		}(job)
+	}
 
 	wg.Wait()
 }
 
-func initialModel(states []*FileState, threads int) model {
+func buildJobs(cfg Config, client *http.Client) []*FileJob {
 
-	sp := spinner.New()
-	sp.Spinner = spinner.Line
+	var jobs []*FileJob
 
-	return model{
-		files:    states,
-		spinner:  sp,
-		progress: progress.New(progress.WithDefaultGradient()),
-		threads:  threads,
+	for i := 1; i <= cfg.TotalParts; i++ {
+
+		var name string
+
+		if i == 1 {
+			name = "SystemPE.part001.exe"
+		} else {
+			name = fmt.Sprintf("SystemPE.part%03d.rar", i)
+		}
+
+		url := strings.TrimRight(cfg.BaseURL, "/") + "/" + name
+
+		size := probeSize(client, url)
+
+		job := &FileJob{
+			Name: name,
+			URL:  url,
+			Size: size,
+		}
+
+		job.Segments = partition(size, cfg)
+
+		jobs = append(jobs, job)
+	}
+
+	return jobs
+}
+
+type UI struct {
+	files []*FileJob
+
+	table table.Model
+
+	progress progress.Model
+
+	spin spinner.Model
+
+	last int64
+
+	history []float64
+
+	refresh time.Duration
+}
+
+func newUI(cfg Config, files []*FileJob) UI {
+
+	cols := []table.Column{
+		{"File", 30},
+		{"Progress", 10},
+		{"Downloaded", 12},
+	}
+
+	t := table.New(table.WithColumns(cols))
+
+	p := progress.New(progress.WithDefaultGradient())
+
+	s := spinner.New()
+	s.Spinner = spinner.Line
+
+	return UI{
+		files:    files,
+		table:    t,
+		progress: p,
+		spin:     s,
+		refresh:  time.Millisecond * time.Duration(cfg.UIRefreshMs),
 	}
 }
 
-func tick() tea.Cmd {
-
-	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
-		return t
-	})
+func (u UI) Init() tea.Cmd {
+	return tea.Tick(u.refresh, func(t time.Time) tea.Msg { return t })
 }
 
-func (m model) Init() tea.Cmd {
-	return tick()
+func percent(f *FileJob) int {
+
+	if f.Size == 0 {
+		return 0
+	}
+
+	d := atomic.LoadInt64(&f.Downloaded)
+
+	return int(float64(d) / float64(f.Size) * 100)
 }
 
-func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (u UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg.(type) {
 
 	case time.Time:
 
-		current := atomic.LoadInt64(&totalBytes)
+		rows := []table.Row{}
 
-		diff := current - prevBytes
+		for _, f := range u.files {
 
-		prevBytes = current
-
-		m.speed = float64(diff) / 1024 / 1024
-
-		m.history = append(m.history, m.speed)
-
-		if len(m.history) > 30 {
-			m.history = m.history[1:]
+			rows = append(rows, table.Row{
+				f.Name,
+				fmt.Sprintf("%d%%", percent(f)),
+				fmt.Sprintf("%.2fMB", float64(f.Downloaded)/1024/1024),
+			})
 		}
 
-		var total int64
-		var done int64
+		u.table.SetRows(rows)
 
-		for _, f := range m.files {
-
-			total += f.Total
-			done += f.Current
-		}
-
-		if total > 0 {
-
-			remaining := total - done
-
-			if m.speed > 0 {
-
-				sec := float64(remaining) / (m.speed * 1024 * 1024)
-
-				m.eta = (time.Duration(sec) * time.Second).String()
-			}
-		}
-
-		return m, tick()
+		return u, tea.Tick(u.refresh, func(t time.Time) tea.Msg { return t })
 	}
 
-	var cmd tea.Cmd
-	m.spinner, cmd = m.spinner.Update(msg)
-
-	return m, cmd
+	return u, nil
 }
 
-func graph(history []float64) string {
+func (u UI) View() string {
 
-	g := ""
+	title := lipgloss.NewStyle().Bold(true).Render("Downloader")
 
-	for _, v := range history {
-
-		bars := int(v * 2)
-
-		line := ""
-
-		for i := 0; i < bars; i++ {
-			line += "█"
-		}
-
-		g += line + "\n"
-	}
-
-	return g
-}
-
-func (m model) View() string {
-
-	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("63")).Render("SystemPE Downloader")
-
-	out := title + "\n\n"
-
-	out += fmt.Sprintf("Threads: %d\nSpeed: %.2f MB/s\nETA: %s\n\n", m.threads, m.speed, m.eta)
-
-	for _, f := range m.files {
-
-		pct := float64(f.Current) / float64(f.Total)
-
-		if f.Total == 0 {
-			pct = 0
-		}
-
-		bar := m.progress.ViewAs(pct)
-
-		spin := m.spinner.View()
-
-		status := spin
-
-		if f.Completed {
-			status = "✔"
-		}
-
-		out += fmt.Sprintf("%s %s %s\n", status, f.Name, bar)
-	}
-
-	out += "\nThroughput Graph\n"
-
-	out += graph(m.history)
-
-	out += "\nAuthor: rhshourav\nGitHub: https://github.com/rhshourav\n"
-
-	return out
+	return title + "\n\n" + u.table.View()
 }
 
 func main() {
 
 	cfg := loadConfig()
 
-	names := generateFiles(cfg)
+	db := openDB(cfg.DBPath)
 
-	var states []*FileState
+	client := httpClient(cfg.HTTPTimeoutSeconds)
 
-	for _, n := range names {
-		states = append(states, &FileState{Name: n})
-	}
+	jobs := buildJobs(cfg, client)
 
-	go startDownloads(cfg, states)
+	os.MkdirAll(cfg.DownloadPath, 0755)
 
-	p := tea.NewProgram(initialModel(states, cfg.Threads))
+	ui := newUI(cfg, jobs)
+
+	go workerPool(cfg, jobs, db)
+
+	p := tea.NewProgram(ui)
 
 	p.Start()
 }

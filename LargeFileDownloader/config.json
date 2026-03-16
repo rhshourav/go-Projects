@@ -1,9 +1,16 @@
 {
   "author": "rhshourav",
-  "github": "https://github.com/rhshourav",
+  "author_url": "https://github.com/rhshourav",
   "base_url": "https://raw.githubusercontent.com/rhshourav/ideal-fishstick/refs/heads/main/SystemPE-Test",
   "download_path": "SystemPE",
-  "threads": 32,
-  "retry_count": 5,
-  "total_parts": 113
+  "threads_total": 128,
+  "segments_per_file": 8,
+  "per_file_min_segment_size_mb": 2,
+  "retry_count": 6,
+  "head_timeout_seconds": 10,
+  "http_timeout_seconds": 0,
+  "concurrent_file_slots": 32,
+  "total_parts": 113,
+  "ui_refresh_ms": 200,
+  "db_path": "resume.db"
 }

@@ -2,3 +2,5 @@ go mod init systempe-downloader
 go get github.com/charmbracelet/bubbletea
 go get github.com/charmbracelet/bubbles/progress
 go get github.com/charmbracelet/lipgloss
+go get github.com/charmbracelet/bubbles
+go get modernc.org/sqlite
