@@ -40,6 +40,7 @@ var (
 	docStyle      = lipgloss.NewStyle().Margin(1, 2)
 	helpStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#777777")).MarginTop(1)
 	taxStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF0000")).Bold(true)
+	chartLabel    = lipgloss.NewStyle().Bold(true)
 	detailKey     = lipgloss.NewStyle().Foreground(lipgloss.Color("#00D7FF")).Bold(true)
 	boxStyle      = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(1, 1)
 )
@@ -60,7 +61,6 @@ type model struct {
 	authorSpin    spinner.Model
 	showInfo      bool
 	infoOffset    int
-	resultOffset  int
 	resultView    string
 	width         int
 	height        int
@@ -92,7 +92,6 @@ func initialModel() model {
 		authorSpin:    a,
 		showInfo:      false,
 		infoOffset:    0,
-		resultOffset:  0,
 		resultView:    "",
 		width:         100,
 		height:        40,
@@ -102,8 +101,8 @@ func initialModel() model {
 	}
 
 	placeholders := []string{
-		"1. Annual Salary (BDT) [Default: 0 / Skip]",
-		"2. Festival bonus already included? (y/n) [Default: n]",
+		"1. Gross Annual Salary (BDT) [Default: 0 / Skip]",
+		"2. Festival bonus already included in gross salary? (y/n) [Default: n]",
 		"3. Enter Custom Salary Breakdown? (y/n) [Default: n]",
 		"   -> Basic Pay (annual BDT) [Default: 0]",
 		"   -> House Rent Allowance (annual BDT) [Default: 0]",
@@ -139,17 +138,18 @@ func initialModel() model {
 	return m
 }
 
-func (m model) Init() tea.Cmd { return tea.Batch(textinput.Blink) }
+func (m model) Init() tea.Cmd {
+	return tea.Batch(textinput.Blink)
+}
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		// global controls
 		switch msg.String() {
 		case "ctrl+c", "q", "esc":
 			return m, tea.Quit
 		case "r":
-			if m.state == stateInput || m.state == stateResult {
+			if m.state == stateResult {
 				return initialModel(), textinput.Blink
 			}
 		case "i":
@@ -160,7 +160,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// details panel scrolling
 		if m.showInfo {
 			switch msg.String() {
 			case "up", "k":
@@ -189,41 +188,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// result scrolling
-		if m.state == stateResult && !m.showInfo {
+		if !m.showInfo && m.state == stateInput {
 			switch msg.String() {
-			case "up", "k":
-				if m.resultOffset > 0 {
-					m.resultOffset--
-				}
-				return m, nil
-			case "down", "j":
-				m.resultOffset++
-				return m, nil
-			case "pgup":
-				m.resultOffset -= (m.height / 2)
-				if m.resultOffset < 0 {
-					m.resultOffset = 0
-				}
-				return m, nil
-			case "pgdown":
-				m.resultOffset += (m.height / 2)
-				return m, nil
-			case "home":
-				m.resultOffset = 0
-				return m, nil
-			case "end":
-				m.resultOffset = 100000
-				return m, nil
-			}
-		}
-
-		// input navigation
-		if m.state == stateInput && !m.showInfo {
-			switch msg.String() {
-			case "backtab", "shift+tab", "ctrl+p":
-				m.goPreviousInput()
-				return m, nil
 			case "enter":
 				if m.step == 2 {
 					wantsCustom := strings.ToLower(getVal(m.inputs[2].Value(), "n")) == "y"
@@ -258,7 +224,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case calculationDoneMsg:
 		m.state = stateResult
-		m.resultOffset = 0
 		m.resultView = generateResults(m)
 		return m, nil
 
@@ -267,9 +232,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		if m.infoOffset < 0 {
 			m.infoOffset = 0
-		}
-		if m.resultOffset < 0 {
-			m.resultOffset = 0
 		}
 	}
 
@@ -280,30 +242,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
-}
-
-func (m *model) goPreviousInput() {
-	if m.step <= 0 {
-		return
-	}
-
-	wantsCustom := strings.ToLower(getVal(m.inputs[2].Value(), "n")) == "y"
-	if !wantsCustom && m.step == 9 {
-		m.step = 2
-	} else {
-		m.step--
-	}
-
-	if m.step < 0 {
-		m.step = 0
-	}
-
-	for i := range m.inputs {
-		m.inputs[i].Blur()
-	}
-	if m.step < len(m.inputs) {
-		m.inputs[m.step].Focus()
-	}
 }
 
 func (m model) View() string {
@@ -336,9 +274,8 @@ func (m model) View() string {
 	}
 
 	if m.state == stateResult {
-		footer := helpStyle.Render("Up/Down/PgUp/PgDn/Home/End → scroll • r → restart • i → details • q → quit")
-		result := renderScrollableText(m.resultView, m.resultOffset, m.height-8)
-		return docStyle.Render(author + "\n\n" + banner + "\n\n" + result + "\n\n" + footer)
+		footer := helpStyle.Render("r → restart • i → details • q → quit")
+		return docStyle.Render(author + "\n\n" + banner + "\n\n" + m.resultView + "\n\n" + footer)
 	}
 
 	body := titleStyle.Render(" TAX COMPANION (BANGLADESH) ") + "\n\n"
@@ -349,11 +286,13 @@ func (m model) View() string {
 		}
 		body += fmt.Sprintf("%s\n%s\n\n", headerStyle.Render(m.inputs[i].Placeholder), m.inputs[i].View())
 	}
-	hint := helpStyle.Render("Enter → advance • Ctrl+P/Shift+Tab → previous • r → restart • i → details • q → quit")
+	hint := helpStyle.Render("Enter → advance • i → details • q → quit")
 	return docStyle.Render(author + "\n\n" + banner + "\n\n" + body + "\n" + hint)
 }
 
-func (m model) getAuthorLine() string { return m.authorLine }
+func (m model) getAuthorLine() string {
+	return m.authorLine
+}
 
 func triggerCalculation() tea.Cmd {
 	return func() tea.Msg {
@@ -419,12 +358,14 @@ func renderDetailsPanel(width int) string {
 	}
 	var sb strings.Builder
 	sb.WriteString(subTitleStyle.Render(" INPUT DETAILS (what each option does) ") + "\n\n")
+
 	write := func(k, d string) {
 		sb.WriteString(detailKey.Render(k) + "\n")
 		sb.WriteString(wrapText(d, w) + "\n\n")
 	}
-	write("Annual Salary", "Total or Gross annual salary before any festival bonus treatment. Accepts arithmetic (e.g., 12809*23) and shorthands (1k, 1 lakh, 1cr).")
-	write("Festival bonus already included? (y/n)", "If 'y', the payslip will treat your entered amount as the Total Salary and deduce the Gross. If 'n', the tool treats your input as Gross Salary, estimates a bonus and shows a full payslip at the end.")
+
+	write("Gross Annual Salary", "Total annual salary before adding festival bonus. Accepts arithmetic (e.g., 12809*23) and shorthands (1k, 1 lakh, 1cr).")
+	write("Festival bonus already included?", "If 'y', the program will not add an estimated festival bonus. If 'n', it estimates a bonus and adds it to the final total salary.")
 	write("Enter Custom Salary Breakdown? (y/n)", "If 'y' you can input exact annual components (basic, hra, medical, food, transport, mobile/other). If 'n' the tool auto-derives a realistic BD split.")
 	write("Basic Pay (annual)", "Annual basic salary.")
 	write("House Rent Allowance (annual)", "HRA component.")
@@ -682,6 +623,8 @@ func deriveSalaryBreakdownFromGross(gross float64) (int, int, int, int) {
 		return 0, 0, 0, 0
 	}
 
+	// Matches the style of the example:
+	// Basic 58%, House rent 29%, Medical 10%, Conveyance 3%
 	basic := int(math.Round(gross * 0.58))
 	hra := int(math.Round(gross * 0.29))
 	med := int(math.Round(gross * 0.10))
@@ -698,10 +641,19 @@ func deriveSalaryBreakdownFromGross(gross float64) (int, int, int, int) {
 	return basic, hra, med, conv
 }
 
+func estimateFestivalBonus(gross float64) int {
+	if gross <= 0 {
+		return 0
+	}
+	// Estimate used when bonus is not already included.
+	// Kept close to the style of the example.
+	return int(math.Round(gross * 0.124))
+}
+
 func generateResults(m model) string {
 	var sb strings.Builder
 
-	totalSalaryInput := parseNumeric(getVal(m.inputs[0].Value(), "0"))
+	gross := parseNumeric(getVal(m.inputs[0].Value(), "0"))
 	bonusIncluded := strings.ToLower(getVal(m.inputs[1].Value(), "n")) == "y"
 	wantsCustom := strings.ToLower(getVal(m.inputs[2].Value(), "n")) == "y"
 
@@ -725,278 +677,161 @@ func generateResults(m model) string {
 	applySurcharge := strings.ToLower(getVal(m.inputs[19].Value(), "n")) == "y"
 	surchargeInput := strings.ToLower(getVal(m.inputs[20].Value(), "auto"))
 
-	var baseSalary int
+	var basic, hra, med, conv int
 	var festivalBonus int
 	var totalSalary int
 
-	if totalSalaryInput > 0 || wantsCustom {
+	if gross > 0 || wantsCustom {
 		sb.WriteString(subTitleStyle.Render(" SALARY BREAKDOWN & TAXABLE INCOME ") + "\n")
 
 		if wantsCustom {
-			basic := int(math.Round(cBasic))
-			hra := int(math.Round(cHra))
-			med := int(math.Round(cMed))
-			conv := int(math.Round(cTrans))
+			basic = int(math.Round(cBasic))
+			hra = int(math.Round(cHra))
+			med = int(math.Round(cMed))
+			conv = int(math.Round(cTrans))
 			festivalBonus = int(math.Round(float64(basic) / 6.0))
-			totalSalary = int(math.Round(totalSalaryInput))
-			baseSalary = totalSalary - festivalBonus
-			if baseSalary < 0 {
-				baseSalary = 0
-			}
 
-			sum := basic + hra + med + conv + int(math.Round(cFood)) + int(math.Round(cMob)) + festivalBonus
-			if sum != totalSalary {
-				adj := totalSalary - sum
-				conv += adj
+			sum := basic + hra + med + conv + festivalBonus + int(math.Round(cFood)) + int(math.Round(cMob))
+			if sum != int(math.Round(gross)) {
+				// Keep custom input usable, but make the sum exact.
+				adjust := int(math.Round(gross)) - sum
+				conv += adjust
 				if conv < 0 {
 					conv = 0
 				}
 			}
 
-			exempt := math.Min(float64(totalSalary)/3.0, 450000)
-			taxable := float64(totalSalary) - exempt
-
-			sb.WriteString(fmt.Sprintf("%-30s | %s\n", "Basic Salary", moneyStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(basic)))))
-			sb.WriteString(fmt.Sprintf("%-30s | %s\n", "House rent", moneyStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(hra)))))
-			sb.WriteString(fmt.Sprintf("%-30s | %s\n", "Medical Allowance", moneyStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(med)))))
-			sb.WriteString(fmt.Sprintf("%-30s | %s\n", "Conveyance Allowance", moneyStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(conv)))))
-			sb.WriteString(fmt.Sprintf("%-30s | %s\n", "Gross salary", moneyStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(baseSalary)))))
-			sb.WriteString(fmt.Sprintf("%-30s | %s\n", "Festival Bonus", moneyStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(festivalBonus)))))
-			sb.WriteString(strings.Repeat("-", 60) + "\n")
-			sb.WriteString(fmt.Sprintf("%-30s | %s\n", "Total Salary", moneyStyle.Bold(true).Render(fmt.Sprintf("Tk %10s", formatMoney(totalSalary)))))
-			sb.WriteString(strings.Repeat("-", 60) + "\n")
-			sb.WriteString(fmt.Sprintf("%-30s | %s\n\n", "NET TAXABLE INCOME", taxStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(int(math.Round(taxable)))))))
-
-			sb.WriteString(subTitleStyle.Render(" TAX LIABILITY (CURRENT YEAR - SLAB BREAKDOWN) ") + "\n")
-			taxText, totalTaxCur, slabMap := calculateTax(taxable)
-			sb.WriteString(taxText + "\n")
-
-			var totalTaxPrev float64
-			if prevIncome > 0 {
-				sb.WriteString(subTitleStyle.Render(" PREVIOUS YEAR TAX (OPTIONAL) ") + "\n")
-				prevExempt := math.Min(prevIncome/3.0, 450000)
-				prevTaxable := prevIncome - prevExempt
-				prevTaxText, prevTax, _ := calculateTax(prevTaxable)
-				totalTaxPrev = prevTax
-				sb.WriteString(fmt.Sprintf("%-30s | %s\n", "PREVIOUS GROSS INCOME", moneyStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(int(math.Round(prevIncome)))))))
-				sb.WriteString(fmt.Sprintf("%-30s | %s\n", "PREVIOUS EXEMPTION", pctStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(int(math.Round(prevExempt)))))))
-				sb.WriteString(fmt.Sprintf("%-30s | %s\n\n", "PREVIOUS TAXABLE INCOME", taxStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(int(math.Round(prevTaxable)))))))
-				sb.WriteString(prevTaxText + "\n")
-			}
-
-			combinedBeforeSurcharge := totalTaxCur + totalTaxPrev
-			sb.WriteString(strings.Repeat("=", 60) + "\n")
-			sb.WriteString(fmt.Sprintf("%-30s | %s\n", "TOTAL TAX (CURRENT)", taxStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(int(math.Round(totalTaxCur)))))))
-			if prevIncome > 0 {
-				sb.WriteString(fmt.Sprintf("%-30s | %s\n", "TOTAL TAX (PREVIOUS)", taxStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(int(math.Round(totalTaxPrev)))))))
-			}
-			sb.WriteString(fmt.Sprintf("%-30s | %s\n\n", "COMBINED (BEFORE SURCHARGE)", taxStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(int(math.Round(combinedBeforeSurcharge)))))))
-
-			var surchargeRate float64
-			var surchargeAmount float64
-			threshold := 40000000.0
-
-			if applySurcharge && netWealthCurrent > threshold {
-				if surchargeInput == "auto" || surchargeInput == "" {
-					switch {
-					case netWealthCurrent <= 50000000:
-						surchargeRate = 0.10
-					case netWealthCurrent <= 100000000:
-						surchargeRate = 0.20
-					default:
-						surchargeRate = 0.35
-					}
-				} else {
-					pStr := strings.TrimSuffix(surchargeInput, "%")
-					if p, err := strconv.ParseFloat(pStr, 64); err == nil {
-						surchargeRate = p / 100.0
-					} else {
-						surchargeRate = 0.10
-					}
-				}
-				surchargeAmount = combinedBeforeSurcharge * surchargeRate
-				sb.WriteString(subTitleStyle.Render(" NET WEALTH SURCHARGE CHECK ") + "\n")
-				sb.WriteString(fmt.Sprintf("%-30s | %s\n", "NET WEALTH (user)", moneyStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(int(math.Round(netWealthCurrent)))))))
-				sb.WriteString(fmt.Sprintf("%-30s | %s\n", "THRESHOLD", pctStyle.Render("Tk 40,000,000")))
-				sb.WriteString(fmt.Sprintf("%-30s | %s\n", "SURCHARGE %", pctStyle.Render(fmt.Sprintf("%.1f%%", surchargeRate*100))))
-				sb.WriteString(fmt.Sprintf("%-30s | %s\n\n", "SURCHARGE AMOUNT", taxStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(int(math.Round(surchargeAmount)))))))
-			} else {
-				if applySurcharge {
-					sb.WriteString(subTitleStyle.Render(" NET WEALTH SURCHARGE CHECK ") + "\n")
-					sb.WriteString(fmt.Sprintf("%-30s | %s\n\n", "RESULT", pctStyle.Render("No surcharge applied (below threshold)")))
-				}
-			}
-
-			finalTax := combinedBeforeSurcharge + surchargeAmount
-			sb.WriteString(strings.Repeat("=", 60) + "\n")
-			sb.WriteString(fmt.Sprintf("%-30s | %s\n", "FINAL TAX (AFTER SURCHARGE)", taxStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(int(math.Round(finalTax)))))))
-			sb.WriteString(strings.Repeat("=", 60) + "\n\n")
-
-			sb.WriteString(subTitleStyle.Render(" VISUAL: TAX SUMMARY (PIE CHART) ") + "\n")
-			sb.WriteString(renderTaxPieChart(totalTaxCur, surchargeAmount, 56) + "\n\n")
-			sb.WriteString(subTitleStyle.Render(" TAX SLAB CONTRIBUTIONS (PIE CHART) ") + "\n")
-			sb.WriteString(renderSlabPieChart(slabMap, 56) + "\n\n")
-
-			sb.WriteString(subTitleStyle.Render(" WEALTH CONSISTENCY CHECK ") + "\n")
-			wealthIncrease := netWealthCurrent - openingNetWealth
-			expectedSavings := float64(totalSalary) - totalExpense - finalTax
-			sb.WriteString(fmt.Sprintf("%-40s : %s\n", "Current Net Wealth (reported)", moneyStyle.Render(fmt.Sprintf("Tk %s", formatMoney(int(math.Round(netWealthCurrent)))))))
-			sb.WriteString(fmt.Sprintf("%-40s : %s\n", "Opening Net Wealth (previous year)", moneyStyle.Render(fmt.Sprintf("Tk %s", formatMoney(int(math.Round(openingNetWealth)))))))
-			sb.WriteString(fmt.Sprintf("%-40s : %s\n", "Wealth Increase (current - opening)", moneyStyle.Render(fmt.Sprintf("Tk %s", formatMoney(int(math.Round(wealthIncrease)))))))
-			sb.WriteString(fmt.Sprintf("%-40s : %s\n\n", "Estimated After-tax Savings (salary - expense - tax)", moneyStyle.Render(fmt.Sprintf("Tk %s", formatMoney(int(math.Round(expectedSavings)))))))
-
-			tol := math.Max(10000.0, math.Abs(expectedSavings)*0.01)
-			diff := wealthIncrease - expectedSavings
-			if math.Abs(diff) <= tol {
-				sb.WriteString(fmt.Sprintf("Result: %s\n\n", pctStyle.Render("OK — wealth increase matches after-tax savings within tolerance")))
-			} else if diff > 0 {
-				sb.WriteString(fmt.Sprintf("Result: %s\n", taxStyle.Render("ALERT — unexplained wealth increase")))
-				sb.WriteString(fmt.Sprintf("Details: Reported wealth rose by %s more than estimated savings (difference = %s).\n", moneyStyle.Render(fmt.Sprintf("Tk %s", formatMoney(int(math.Round(diff))))), moneyStyle.Render(fmt.Sprintf("Tk %s", formatMoney(int(math.Round(diff)))))))
-				sb.WriteString("Possible reasons: undisclosed income, asset revaluation, gifts, inheritances, loans forgiven, or incorrect inputs.\n")
-				sb.WriteString("Suggested actions: verify asset/liability entries, check bank balances, add explanations for large transfers.\n\n")
-			} else {
-				sb.WriteString(fmt.Sprintf("Result: %s\n", pctStyle.Render("Wealth increase is LESS than estimated savings")))
-				sb.WriteString("Possible reasons: cash withdrawn, spending not entered as expense, loan repayments, or data-entry mismatch.\n\n")
-			}
-
-			_ = totalSalary
-			_ = baseSalary
-			_ = slabMap
-
+			totalSalary = int(math.Round(gross))
 		} else {
-			// payslip from gross/total salary input
-			ratio := 42714.0 / 344475.0
-			var grossSalary int
-
+			basic, hra, med, conv = deriveSalaryBreakdownFromGross(gross)
 			if bonusIncluded {
-				totalSalary = int(math.Round(totalSalaryInput))
-				grossSalary = int(math.Round(totalSalaryInput / (1.0 + ratio)))
-				festivalBonus = totalSalary - grossSalary
+				festivalBonus = 0
+				totalSalary = int(math.Round(gross))
 			} else {
-				grossSalary = int(math.Round(totalSalaryInput))
-				festivalBonus = int(math.Round(totalSalaryInput * ratio))
-				totalSalary = grossSalary + festivalBonus
+				festivalBonus = estimateFestivalBonus(gross)
+				totalSalary = int(math.Round(gross)) + festivalBonus
 			}
+		}
 
-			basic, hra, med, conv := deriveSalaryBreakdownFromGross(float64(grossSalary))
+		exempt := math.Min(gross/3.0, 450000)
+		taxable := gross - exempt
 
-			sb.WriteString(subTitleStyle.Render(" SALARY BREAKDOWN / PAYSLIP ") + "\n")
+		sb.WriteString(fmt.Sprintf("%-30s | %s\n", "Basic Salary", moneyStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(basic)))))
+		sb.WriteString(fmt.Sprintf("%-30s | %s\n", "House rent", moneyStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(hra)))))
+		sb.WriteString(fmt.Sprintf("%-30s | %s\n", "Medical Allowance", moneyStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(med)))))
+		sb.WriteString(fmt.Sprintf("%-30s | %s\n", "Conveyance Allowance", moneyStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(conv)))))
+		sb.WriteString(fmt.Sprintf("%-30s | %s\n", "Gross salary", moneyStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(int(math.Round(gross)))))))
+		sb.WriteString(fmt.Sprintf("%-30s | %s\n", "festival Bonus", moneyStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(festivalBonus)))))
+		sb.WriteString(strings.Repeat("-", 60) + "\n")
+		sb.WriteString(fmt.Sprintf("%-30s | %s\n", "Total Salary", moneyStyle.Bold(true).Render(fmt.Sprintf("Tk %10s", formatMoney(totalSalary)))))
+		sb.WriteString(strings.Repeat("-", 60) + "\n")
+		sb.WriteString(fmt.Sprintf("%-30s | %s\n\n", "NET TAXABLE INCOME", taxStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(int(math.Round(taxable)))))))
+
+		if !wantsCustom {
+			sb.WriteString(subTitleStyle.Render(" BREAKDOWN OF TOTAL SALARY ") + "\n")
 			sb.WriteString(fmt.Sprintf("%-30s | %s\n", "Basic Salary", moneyStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(basic)))))
 			sb.WriteString(fmt.Sprintf("%-30s | %s\n", "House rent", moneyStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(hra)))))
 			sb.WriteString(fmt.Sprintf("%-30s | %s\n", "Medical Allowance", moneyStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(med)))))
 			sb.WriteString(fmt.Sprintf("%-30s | %s\n", "Conveyance Allowance", moneyStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(conv)))))
-			sb.WriteString(fmt.Sprintf("%-30s | %s\n", "Gross salary", moneyStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(grossSalary)))))
-
-			if bonusIncluded {
-				sb.WriteString(fmt.Sprintf("%-30s | %s\n", "Festival Bonus", moneyStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(festivalBonus)))))
-			} else {
-				sb.WriteString(fmt.Sprintf("%-30s | %s\n", "Festival Bonus (Estimated)", moneyStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(festivalBonus)))))
-			}
-
-			sb.WriteString(strings.Repeat("-", 60) + "\n")
+			sb.WriteString(fmt.Sprintf("%-30s | %s\n", "Gross salary", moneyStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(int(math.Round(gross)))))))
+			sb.WriteString(fmt.Sprintf("%-30s | %s\n", "festival Bonus", moneyStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(festivalBonus)))))
 			sb.WriteString(fmt.Sprintf("%-30s | %s\n", "Total Salary", moneyStyle.Bold(true).Render(fmt.Sprintf("Tk %10s", formatMoney(totalSalary)))))
-			sb.WriteString(strings.Repeat("-", 60) + "\n\n")
-
-			exempt := math.Min(float64(totalSalary)/3.0, 450000)
-			taxable := float64(totalSalary) - exempt
-			sb.WriteString(fmt.Sprintf("%-30s | %s\n\n", "NET TAXABLE INCOME", taxStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(int(math.Round(taxable)))))))
-
-			sb.WriteString(subTitleStyle.Render(" TAX LIABILITY (CURRENT YEAR - SLAB BREAKDOWN) ") + "\n")
-			taxText, totalTaxCur, slabMap := calculateTax(taxable)
-			sb.WriteString(taxText + "\n")
-
-			var totalTaxPrev float64
-			if prevIncome > 0 {
-				sb.WriteString(subTitleStyle.Render(" PREVIOUS YEAR TAX (OPTIONAL) ") + "\n")
-				prevExempt := math.Min(prevIncome/3.0, 450000)
-				prevTaxable := prevIncome - prevExempt
-				prevTaxText, prevTax, _ := calculateTax(prevTaxable)
-				totalTaxPrev = prevTax
-				sb.WriteString(fmt.Sprintf("%-30s | %s\n", "PREVIOUS GROSS INCOME", moneyStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(int(math.Round(prevIncome)))))))
-				sb.WriteString(fmt.Sprintf("%-30s | %s\n", "PREVIOUS EXEMPTION", pctStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(int(math.Round(prevExempt)))))))
-				sb.WriteString(fmt.Sprintf("%-30s | %s\n\n", "PREVIOUS TAXABLE INCOME", taxStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(int(math.Round(prevTaxable)))))))
-				sb.WriteString(prevTaxText + "\n")
-			}
-
-			combinedBeforeSurcharge := totalTaxCur + totalTaxPrev
-			sb.WriteString(strings.Repeat("=", 60) + "\n")
-			sb.WriteString(fmt.Sprintf("%-30s | %s\n", "TOTAL TAX (CURRENT)", taxStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(int(math.Round(totalTaxCur)))))))
-			if prevIncome > 0 {
-				sb.WriteString(fmt.Sprintf("%-30s | %s\n", "TOTAL TAX (PREVIOUS)", taxStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(int(math.Round(totalTaxPrev)))))))
-			}
-			sb.WriteString(fmt.Sprintf("%-30s | %s\n\n", "COMBINED (BEFORE SURCHARGE)", taxStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(int(math.Round(combinedBeforeSurcharge)))))))
-
-			var surchargeRate float64
-			var surchargeAmount float64
-			threshold := 40000000.0
-
-			if applySurcharge && netWealthCurrent > threshold {
-				if surchargeInput == "auto" || surchargeInput == "" {
-					switch {
-					case netWealthCurrent <= 50000000:
-						surchargeRate = 0.10
-					case netWealthCurrent <= 100000000:
-						surchargeRate = 0.20
-					default:
-						surchargeRate = 0.35
-					}
-				} else {
-					pStr := strings.TrimSuffix(surchargeInput, "%")
-					if p, err := strconv.ParseFloat(pStr, 64); err == nil {
-						surchargeRate = p / 100.0
-					} else {
-						surchargeRate = 0.10
-					}
-				}
-				surchargeAmount = combinedBeforeSurcharge * surchargeRate
-				sb.WriteString(subTitleStyle.Render(" NET WEALTH SURCHARGE CHECK ") + "\n")
-				sb.WriteString(fmt.Sprintf("%-30s | %s\n", "NET WEALTH (user)", moneyStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(int(math.Round(netWealthCurrent)))))))
-				sb.WriteString(fmt.Sprintf("%-30s | %s\n", "THRESHOLD", pctStyle.Render("Tk 40,000,000")))
-				sb.WriteString(fmt.Sprintf("%-30s | %s\n", "SURCHARGE %", pctStyle.Render(fmt.Sprintf("%.1f%%", surchargeRate*100))))
-				sb.WriteString(fmt.Sprintf("%-30s | %s\n\n", "SURCHARGE AMOUNT", taxStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(int(math.Round(surchargeAmount)))))))
-			} else {
-				if applySurcharge {
-					sb.WriteString(subTitleStyle.Render(" NET WEALTH SURCHARGE CHECK ") + "\n")
-					sb.WriteString(fmt.Sprintf("%-30s | %s\n\n", "RESULT", pctStyle.Render("No surcharge applied (below threshold)")))
-				}
-			}
-
-			finalTax := combinedBeforeSurcharge + surchargeAmount
-			sb.WriteString(strings.Repeat("=", 60) + "\n")
-			sb.WriteString(fmt.Sprintf("%-30s | %s\n", "FINAL TAX (AFTER SURCHARGE)", taxStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(int(math.Round(finalTax)))))))
-			sb.WriteString(strings.Repeat("=", 60) + "\n\n")
-
-			sb.WriteString(subTitleStyle.Render(" VISUAL: TAX SUMMARY (PIE CHART) ") + "\n")
-			sb.WriteString(renderTaxPieChart(totalTaxCur, surchargeAmount, 56) + "\n\n")
-			sb.WriteString(subTitleStyle.Render(" TAX SLAB CONTRIBUTIONS (PIE CHART) ") + "\n")
-			sb.WriteString(renderSlabPieChart(slabMap, 56) + "\n\n")
-
-			sb.WriteString(subTitleStyle.Render(" WEALTH CONSISTENCY CHECK ") + "\n")
-			wealthIncrease := netWealthCurrent - openingNetWealth
-			expectedSavings := float64(totalSalary) - totalExpense - finalTax
-			sb.WriteString(fmt.Sprintf("%-40s : %s\n", "Current Net Wealth (reported)", moneyStyle.Render(fmt.Sprintf("Tk %s", formatMoney(int(math.Round(netWealthCurrent)))))))
-			sb.WriteString(fmt.Sprintf("%-40s : %s\n", "Opening Net Wealth (previous year)", moneyStyle.Render(fmt.Sprintf("Tk %s", formatMoney(int(math.Round(openingNetWealth)))))))
-			sb.WriteString(fmt.Sprintf("%-40s : %s\n", "Wealth Increase (current - opening)", moneyStyle.Render(fmt.Sprintf("Tk %s", formatMoney(int(math.Round(wealthIncrease)))))))
-			sb.WriteString(fmt.Sprintf("%-40s : %s\n\n", "Estimated After-tax Savings (salary - expense - tax)", moneyStyle.Render(fmt.Sprintf("Tk %s", formatMoney(int(math.Round(expectedSavings)))))))
-
-			tol := math.Max(10000.0, math.Abs(expectedSavings)*0.01)
-			diff := wealthIncrease - expectedSavings
-			if math.Abs(diff) <= tol {
-				sb.WriteString(fmt.Sprintf("Result: %s\n\n", pctStyle.Render("OK — wealth increase matches after-tax savings within tolerance")))
-			} else if diff > 0 {
-				sb.WriteString(fmt.Sprintf("Result: %s\n", taxStyle.Render("ALERT — unexplained wealth increase")))
-				sb.WriteString(fmt.Sprintf("Details: Reported wealth rose by %s more than estimated savings (difference = %s).\n", moneyStyle.Render(fmt.Sprintf("Tk %s", formatMoney(int(math.Round(diff))))), moneyStyle.Render(fmt.Sprintf("Tk %s", formatMoney(int(math.Round(diff)))))))
-				sb.WriteString("Possible reasons: undisclosed income, asset revaluation, gifts, inheritances, loans forgiven, or incorrect inputs.\n")
-				sb.WriteString("Suggested actions: verify asset/liability entries, check bank balances, add explanations for large transfers.\n\n")
-			} else {
-				sb.WriteString(fmt.Sprintf("Result: %s\n", pctStyle.Render("Wealth increase is LESS than estimated savings")))
-				sb.WriteString("Possible reasons: cash withdrawn, spending not entered as expense, loan repayments, or data-entry mismatch.\n\n")
-			}
-
-			_ = totalSalary
-			_ = grossSalary
-			_ = slabMap
+			sb.WriteString("\n")
 		}
+
+		sb.WriteString(subTitleStyle.Render(" TAX LIABILITY (CURRENT YEAR - SLAB BREAKDOWN) ") + "\n")
+		taxText, totalTaxCur, slabMap := calculateTax(taxable)
+		sb.WriteString(taxText + "\n")
+
+		var totalTaxPrev float64
+		if prevIncome > 0 {
+			sb.WriteString(subTitleStyle.Render(" PREVIOUS YEAR TAX (OPTIONAL) ") + "\n")
+			prevExempt := math.Min(prevIncome/3.0, 450000)
+			prevTaxable := prevIncome - prevExempt
+			prevTaxText, prevTax, _ := calculateTax(prevTaxable)
+			totalTaxPrev = prevTax
+			sb.WriteString(fmt.Sprintf("%-30s | %s\n", "PREVIOUS GROSS INCOME", moneyStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(int(math.Round(prevIncome)))))))
+			sb.WriteString(fmt.Sprintf("%-30s | %s\n", "PREVIOUS EXEMPTION", pctStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(int(math.Round(prevExempt)))))))
+			sb.WriteString(fmt.Sprintf("%-30s | %s\n\n", "PREVIOUS TAXABLE INCOME", taxStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(int(math.Round(prevTaxable)))))))
+			sb.WriteString(prevTaxText + "\n")
+		}
+
+		combinedBeforeSurcharge := totalTaxCur + totalTaxPrev
+		sb.WriteString(strings.Repeat("=", 60) + "\n")
+		sb.WriteString(fmt.Sprintf("%-30s | %s\n", "TOTAL TAX (CURRENT)", taxStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(int(math.Round(totalTaxCur)))))))
+		if prevIncome > 0 {
+			sb.WriteString(fmt.Sprintf("%-30s | %s\n", "TOTAL TAX (PREVIOUS)", taxStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(int(math.Round(totalTaxPrev)))))))
+		}
+		sb.WriteString(fmt.Sprintf("%-30s | %s\n\n", "COMBINED (BEFORE SURCHARGE)", taxStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(int(math.Round(combinedBeforeSurcharge)))))))
+
+		var surchargeRate float64
+		var surchargeAmount float64
+		threshold := 40000000.0
+
+		if applySurcharge && netWealthCurrent > threshold {
+			if surchargeInput == "auto" || surchargeInput == "" {
+				switch {
+				case netWealthCurrent <= 50000000:
+					surchargeRate = 0.10
+				case netWealthCurrent <= 100000000:
+					surchargeRate = 0.20
+				default:
+					surchargeRate = 0.35
+				}
+			} else {
+				pStr := strings.TrimSuffix(surchargeInput, "%")
+				if p, err := strconv.ParseFloat(pStr, 64); err == nil {
+					surchargeRate = p / 100.0
+				} else {
+					surchargeRate = 0.10
+				}
+			}
+			surchargeAmount = combinedBeforeSurcharge * surchargeRate
+			sb.WriteString(subTitleStyle.Render(" NET WEALTH SURCHARGE CHECK ") + "\n")
+			sb.WriteString(fmt.Sprintf("%-30s | %s\n", "NET WEALTH (user)", moneyStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(int(math.Round(netWealthCurrent)))))))
+			sb.WriteString(fmt.Sprintf("%-30s | %s\n", "THRESHOLD", pctStyle.Render("Tk 40,000,000")))
+			sb.WriteString(fmt.Sprintf("%-30s | %s\n", "SURCHARGE %", pctStyle.Render(fmt.Sprintf("%.1f%%", surchargeRate*100))))
+			sb.WriteString(fmt.Sprintf("%-30s | %s\n\n", "SURCHARGE AMOUNT", taxStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(int(math.Round(surchargeAmount)))))))
+		} else {
+			if applySurcharge {
+				sb.WriteString(subTitleStyle.Render(" NET WEALTH SURCHARGE CHECK ") + "\n")
+				sb.WriteString(fmt.Sprintf("%-30s | %s\n\n", "RESULT", pctStyle.Render("No surcharge applied (below threshold)")))
+			}
+		}
+
+		finalTax := combinedBeforeSurcharge + surchargeAmount
+		sb.WriteString(strings.Repeat("=", 60) + "\n")
+		sb.WriteString(fmt.Sprintf("%-30s | %s\n", "FINAL TAX (AFTER SURCHARGE)", taxStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(int(math.Round(finalTax)))))))
+		sb.WriteString(strings.Repeat("=", 60) + "\n\n")
+
+		sb.WriteString(subTitleStyle.Render(" VISUAL: TAX SUMMARY (PIE CHART) ") + "\n")
+		sb.WriteString(renderTaxPieChart(totalTaxCur, surchargeAmount, 56) + "\n\n")
+		sb.WriteString(subTitleStyle.Render(" TAX SLAB CONTRIBUTIONS (PIE CHART) ") + "\n")
+		sb.WriteString(renderSlabPieChart(slabMap, 56) + "\n\n")
+
+		sb.WriteString(subTitleStyle.Render(" WEALTH CONSISTENCY CHECK ") + "\n")
+		wealthIncrease := netWealthCurrent - openingNetWealth
+		expectedSavings := gross - totalExpense - finalTax
+		sb.WriteString(fmt.Sprintf("%-40s : %s\n", "Current Net Wealth (reported)", moneyStyle.Render(fmt.Sprintf("Tk %s", formatMoney(int(math.Round(netWealthCurrent)))))))
+		sb.WriteString(fmt.Sprintf("%-40s : %s\n", "Opening Net Wealth (previous year)", moneyStyle.Render(fmt.Sprintf("Tk %s", formatMoney(int(math.Round(openingNetWealth)))))))
+		sb.WriteString(fmt.Sprintf("%-40s : %s\n", "Wealth Increase (current - opening)", moneyStyle.Render(fmt.Sprintf("Tk %s", formatMoney(int(math.Round(wealthIncrease)))))))
+		sb.WriteString(fmt.Sprintf("%-40s : %s\n\n", "Estimated After-tax Savings (gross - expense - tax)", moneyStyle.Render(fmt.Sprintf("Tk %s", formatMoney(int(math.Round(expectedSavings)))))))
+
+		tol := math.Max(10000.0, math.Abs(expectedSavings)*0.01)
+		diff := wealthIncrease - expectedSavings
+		if math.Abs(diff) <= tol {
+			sb.WriteString(fmt.Sprintf("Result: %s\n\n", pctStyle.Render("OK — wealth increase matches after-tax savings within tolerance")))
+		} else if diff > 0 {
+			sb.WriteString(fmt.Sprintf("Result: %s\n", taxStyle.Render("ALERT — unexplained wealth increase")))
+			sb.WriteString(fmt.Sprintf("Details: Reported wealth rose by %s more than estimated savings (difference = %s).\n", moneyStyle.Render(fmt.Sprintf("Tk %s", formatMoney(int(math.Round(diff))))), moneyStyle.Render(fmt.Sprintf("Tk %s", formatMoney(int(math.Round(diff)))))))
+			sb.WriteString("Possible reasons: undisclosed income, asset revaluation, gifts, inheritances, loans forgiven, or incorrect inputs.\n")
+			sb.WriteString("Suggested actions: verify asset/liability entries, check bank balances, add explanations for large transfers.\n\n")
+		} else {
+			sb.WriteString(fmt.Sprintf("Result: %s\n", pctStyle.Render("Wealth increase is LESS than estimated savings")))
+			sb.WriteString("Possible reasons: cash withdrawn, spending not entered as expense, loan repayments, or data-entry mismatch.\n\n")
+		}
+
+		_ = slabMap
 	}
 
 	if totalExpense > 0 {
@@ -1028,29 +863,11 @@ func generateResults(m model) string {
 		sb.WriteString(fmt.Sprintf("%-30s | %s | %s\n", "TOTAL ANNUAL EXPENDITURE", pctStyle.Render("100%"), totalStr))
 		sb.WriteString("\n" + subTitleStyle.Render(" VISUAL: EXPENSE ALLOCATION (PIE CHART) ") + "\n")
 		sb.WriteString(renderExpensePieChart(pcts, amts, 56) + "\n")
-	} else if totalSalaryInput == 0 {
+	} else if gross == 0 {
 		sb.WriteString("No income or expense provided. Nothing to calculate!\n")
 	}
 
 	return sb.String()
-}
-
-func renderScrollableText(content string, offset, height int) string {
-	lines := strings.Split(content, "\n")
-	if height < 6 {
-		height = 6
-	}
-	if offset < 0 {
-		offset = 0
-	}
-	if offset > len(lines)-height {
-		offset = max(0, len(lines)-height)
-	}
-	end := offset + height
-	if end > len(lines) {
-		end = len(lines)
-	}
-	return strings.Join(lines[offset:end], "\n")
 }
 
 func renderPieChart(title string, items []pieSlice, width int) string {
