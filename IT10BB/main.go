@@ -1,3 +1,4 @@
+// main.go
 package main
 
 import (
@@ -7,7 +8,6 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -123,12 +123,16 @@ type Report struct {
 	ExpensePcts  map[string]int
 	ExpenseAmts  map[string]int
 
+	TotalAssets      float64
+	TotalLiabilities float64
 	NetWealthCurrent float64
 	OpeningNetWealth float64
 	WealthIncrease   float64
 	ExpectedSavings  float64
 	WealthDifference float64
 	WealthStatus     string
+
+	AuditRisk string // "LOW", "MEDIUM", "HIGH"
 
 	ReverseEnabled        bool
 	TargetNetTakeHome     float64
@@ -217,7 +221,7 @@ func defaultConfig() Config {
 		TaxYear:               "2025-26",
 		SalaryExemptionCap:    500000,
 		MinimumTax:            3000,
-		FestivalBonusRatio:    42714.0 / 344475.0,
+		FestivalBonusRatio:    42714.0 / 344475.0, // fallback
 		RebatePctOfTaxable:    0.03,
 		RebatePctOfInvestment: 0.15,
 		RebateMaxAmount:       1000000,
@@ -294,32 +298,39 @@ func initialModel() model {
 	s.Spinner = spinner.Dot
 	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("#0EA5E9"))
 
+	// indexes mapping (0..30)
 	inputLabels := []string{
-		"1. Annual Salary / Total Package (BDT) [default: 0]",
-		"2. Festival bonus already included? (y/n) [default: n]",
-		"3. Enter custom salary breakdown? (y/n) [default: n]",
-		"   -> Basic pay (annual BDT) [default: 0]",
-		"   -> House rent allowance (annual BDT) [default: 0]",
-		"   -> Medical allowance (annual BDT) [default: 0]",
-		"   -> Food allowance (annual BDT) [default: 0]",
-		"   -> Transport / conveyance (annual BDT) [default: 0]",
-		"   -> Mobile & other allowance (annual BDT) [default: 0]",
-		"4. Total annual expense (BDT) [default: 0]",
-		"5. Location (dhaka/other) [default: other]",
-		"6. Family size [default: 3]",
-		"7. Do you have kids? (y/n) [default: n]",
-		"8. Do you own your home? (y/n) [default: n]",
-		"9. Home-support staff? (y/n) [default: n]",
-		"10. Mode (balanced/conservative/comfortable) [default: balanced]",
-		"11. Previous year's gross income (BDT) [default: 0]",
-		"12. Net wealth (current) (BDT) [default: 0]",
-		"13. Opening net wealth (previous year) (BDT) [default: 0]",
-		"14. Apply net wealth surcharge? (y/n) [default: n]",
-		"15. Surcharge percent (number or 'auto') [default: auto]",
-		"16. Total eligible investment for rebate (BDT) [default: 0]",
-		"17. Reverse calculator? (y/n) [default: n]",
-		"18. Target net take-home pay (BDT) [default: 0]",
-		"19. Extra deductions / PF / other (BDT) [default: 0]",
+		"1. Annual Salary / Total Package (BDT) [default: 0]",                        // 0
+		"2. Festival bonus already included? (y/n) [default: n]",                     // 1
+		"3. Enter custom salary breakdown? (y/n) [default: n]",                       // 2
+		"   -> Basic pay (annual BDT) [default: 0]",                                  // 3
+		"   -> House rent allowance (annual BDT) [default: 0]",                       // 4
+		"   -> Medical allowance (annual BDT) [default: 0]",                          // 5
+		"   -> Food allowance (annual BDT) [default: 0]",                             // 6
+		"   -> Transport / conveyance (annual BDT) [default: 0]",                     // 7
+		"   -> Mobile & other allowance (annual BDT) [default: 0]",                   // 8
+		"   -> Festival bonus % of basic (when custom) [default: use config]",        // 9
+		"4. Total annual expense (BDT) [default: 0]",                                 // 10
+		"5. Location (dhaka/other) [default: other]",                                 // 11
+		"6. Family size [default: 3]",                                                // 12
+		"7. Do you have kids? (y/n) [default: n]",                                    // 13
+		"8. Do you own your home? (y/n) [default: n]",                                // 14
+		"9. Home-support staff? (y/n) [default: n]",                                  // 15
+		"10. Mode (balanced/conservative/comfortable) [default: balanced]",           // 16
+		"11. Previous year's gross income (BDT) [default: 0]",                        // 17
+		"12. Net wealth (current) (BDT) [default: 0] (fallback)",                     // 18
+		"13. Opening net wealth (previous year) (BDT) [default: 0]",                  // 19
+		"14. Total assets (BDT) [default: 0] (optional; overrides net wealth input)", // 20
+		"15. Bank loan outstanding (BDT) [default: 0]",                               // 21
+		"16. Personal loan from others (BDT) [default: 0]",                           // 22
+		"17. Credit card dues (BDT) [default: 0]",                                    // 23
+		"18. Other liabilities (BDT) [default: 0]",                                   // 24
+		"19. Apply net wealth surcharge? (y/n) [default: n]",                         // 25
+		"20. Surcharge percent (number or 'auto') [default: auto]",                   // 26
+		"21. Total eligible investment for rebate (BDT) [default: 0]",                // 27
+		"22. Reverse calculator? (y/n) [default: n]",                                 // 28
+		"23. Target net take-home pay (BDT) [default: 0]",                            // 29
+		"24. Extra deductions / PF / other (BDT) [default: 0]",                       // 30
 	}
 
 	inps := make([]textinput.Model, len(inputLabels))
@@ -327,7 +338,7 @@ func initialModel() model {
 		ti := textinput.New()
 		ti.Placeholder = inputLabels[i]
 		ti.CharLimit = 128
-		ti.Width = 50
+		ti.Width = 60
 		if i == 0 {
 			ti.Focus()
 		}
@@ -465,9 +476,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case "tab", "enter":
 			if m.state == stateInput {
-				if msg.String() == "enter" && m.step == 0 {
-					// continue
-				}
 				cmd := m.nextFieldOrCalculate()
 				return m, cmd
 			}
@@ -593,17 +601,11 @@ func sectionHeader(section int) string {
 }
 
 func renderBanner(width int) string {
+	// updated compact ASCII logo as requested
 	lines := []string{
 		"╭────────────────────────────────────────────────────────╮",
-		"│                                                        │",
-		"│    ████████╗ █████╗ ██╗  ██╗    ██████╗ ███████╗       │",
-		"│    ╚══██╔══╝██╔══██╗██║ ██╔╝   ██╔════╝ ██╔════╝       │",
-		"│       ██║   ███████║█████╔╝    ██║  ███╗█████╗         │",
-		"│       ██║   ██╔══██║██╔═██╗    ██║   ██║██╔══╝         │",
-		"│       ██║   ██║  ██║██║  ██╗   ╚██████╔╝███████╗       │",
-		"│       ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═╝    ╚═════╝ ╚══════╝       │",
-		"│                                                        │",
-		"│               Bangladesh Tax Companion                 │",
+		"│  TAX COMPANION — IT-10B (Bangladesh)                   │",
+		"│  Income, IT-10BB allocation, Wealth check & Audit risk │",
 		"╰────────────────────────────────────────────────────────╯",
 	}
 	out := make([]string, 0, len(lines))
@@ -630,13 +632,19 @@ func maxPlainWidth(lines []string) int {
 }
 
 func (m model) visibleSteps() []int {
+	// updated indices covering new inputs
 	steps := []int{0, 1, 2}
 	if boolVal(m.inputs[2].Value(), false) {
-		steps = append(steps, 3, 4, 5, 6, 7, 8)
+		// custom breakdown: include breakdown fields 3..9 (festival percent included)
+		steps = append(steps, 3, 4, 5, 6, 7, 8, 9)
 	}
-	steps = append(steps, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22)
-	if boolVal(m.inputs[22].Value(), false) {
-		steps = append(steps, 23, 24)
+	// remaining inputs start at 10 .. 30
+	steps = append(steps, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27)
+	// reverse calculator fields (29,30) are conditional on reverseEnabled (index 28)
+	if boolVal(m.inputs[28].Value(), false) {
+		steps = append(steps, 28, 29, 30)
+	} else {
+		steps = append(steps, 28)
 	}
 	return steps
 }
@@ -690,11 +698,11 @@ func stepToSection(step int) int {
 	switch {
 	case step <= 2:
 		return 0
-	case step <= 8:
+	case step <= 9:
 		return 0
-	case step <= 15:
+	case step <= 16:
 		return 1
-	case step <= 21:
+	case step <= 27:
 		return 2
 	default:
 		return 3
@@ -803,16 +811,6 @@ func (m model) handlePromptAction(path string) tea.Cmd {
 	return nil
 }
 
-func (m model) openPrompt(mode promptMode, defaultPath, notice string) (tea.Model, tea.Cmd) {
-	m.state = statePrompt
-	m.promptActive = true
-	m.promptMode = mode
-	m.prompt.SetValue(defaultPath)
-	m.prompt.Focus()
-	m.notice = notice
-	return m, nil
-}
-
 func computeReportCmd(snapshot model) tea.Cmd {
 	return func() tea.Msg {
 		time.Sleep(350 * time.Millisecond)
@@ -823,6 +821,7 @@ func computeReportCmd(snapshot model) tea.Cmd {
 func buildReport(m model) Report {
 	r := Report{GeneratedAt: time.Now(), TaxYear: m.config.TaxYear}
 
+	// parse inputs with new indices mapping
 	totalInput := parseNumeric(getVal(m.inputs[0].Value(), "0"))
 	bonusIncluded := boolVal(m.inputs[1].Value(), false)
 	customSalary := boolVal(m.inputs[2].Value(), false)
@@ -833,26 +832,32 @@ func buildReport(m model) Report {
 	food := parseNumeric(getVal(m.inputs[6].Value(), "0"))
 	trans := parseNumeric(getVal(m.inputs[7].Value(), "0"))
 	mobile := parseNumeric(getVal(m.inputs[8].Value(), "0"))
+	festivalPct := parseNumeric(getVal(m.inputs[9].Value(), "0")) // new: percent of basic when custom
 
-	totalExpense := parseNumeric(getVal(m.inputs[9].Value(), "0"))
-	location := strings.ToLower(getVal(m.inputs[10].Value(), "other"))
-	familySize := int(math.Round(parseNumeric(getVal(m.inputs[11].Value(), "3"))))
+	totalExpense := parseNumeric(getVal(m.inputs[10].Value(), "0"))
+	location := strings.ToLower(getVal(m.inputs[11].Value(), "other"))
+	familySize := int(math.Round(parseNumeric(getVal(m.inputs[12].Value(), "3"))))
 	if familySize <= 0 {
 		familySize = 3
 	}
-	hasKids := boolVal(m.inputs[12].Value(), false)
-	ownHome := boolVal(m.inputs[13].Value(), false)
-	hasStaff := boolVal(m.inputs[14].Value(), false)
-	mode := strings.ToLower(getVal(m.inputs[15].Value(), "balanced"))
-	prevGross := parseNumeric(getVal(m.inputs[16].Value(), "0"))
-	netWealth := parseNumeric(getVal(m.inputs[17].Value(), "0"))
-	openingWealth := parseNumeric(getVal(m.inputs[18].Value(), "0"))
-	applySurcharge := boolVal(m.inputs[19].Value(), false)
-	surchargeMode := strings.ToLower(getVal(m.inputs[20].Value(), "auto"))
-	investment := parseNumeric(getVal(m.inputs[21].Value(), "0"))
-	reverseEnabled := boolVal(m.inputs[22].Value(), false)
-	targetNet := parseNumeric(getVal(m.inputs[23].Value(), "0"))
-	deductions := parseNumeric(getVal(m.inputs[24].Value(), "0"))
+	hasKids := boolVal(m.inputs[13].Value(), false)
+	ownHome := boolVal(m.inputs[14].Value(), false)
+	hasStaff := boolVal(m.inputs[15].Value(), false)
+	mode := strings.ToLower(getVal(m.inputs[16].Value(), "balanced"))
+	prevGross := parseNumeric(getVal(m.inputs[17].Value(), "0"))
+	netWealthInput := parseNumeric(getVal(m.inputs[18].Value(), "0")) // fallback
+	openingWealth := parseNumeric(getVal(m.inputs[19].Value(), "0"))
+	totalAssets := parseNumeric(getVal(m.inputs[20].Value(), "0")) // new
+	bankLoan := parseNumeric(getVal(m.inputs[21].Value(), "0"))
+	personalLoan := parseNumeric(getVal(m.inputs[22].Value(), "0"))
+	creditCard := parseNumeric(getVal(m.inputs[23].Value(), "0"))
+	otherLiabilities := parseNumeric(getVal(m.inputs[24].Value(), "0"))
+	applySurcharge := boolVal(m.inputs[25].Value(), false)
+	surchargeMode := strings.ToLower(getVal(m.inputs[26].Value(), "auto"))
+	investment := parseNumeric(getVal(m.inputs[27].Value(), "0"))
+	reverseEnabled := boolVal(m.inputs[28].Value(), false)
+	targetNet := parseNumeric(getVal(m.inputs[29].Value(), "0"))
+	deductions := parseNumeric(getVal(m.inputs[30].Value(), "0"))
 
 	r.SalaryInput = totalInput
 	r.BonusIncluded = bonusIncluded
@@ -862,10 +867,10 @@ func buildReport(m model) Report {
 	r.Deductions = deductions
 	r.RebateEligibleInvest = investment
 	r.TotalExpense = totalExpense
-	r.NetWealthCurrent = netWealth
 	r.OpeningNetWealth = openingWealth
 	r.ApplySurcharge = applySurcharge
 
+	// festival / salary computations
 	var baseGross float64
 	var bonus float64
 	var totalComp float64
@@ -876,6 +881,7 @@ func buildReport(m model) Report {
 		if totalComp <= 0 {
 			totalComp = baseGross
 		}
+		// If custom and user provided festival percent, use it (percentage of basic)
 		if bonusIncluded {
 			if totalComp < baseGross {
 				bonus = 0
@@ -884,10 +890,18 @@ func buildReport(m model) Report {
 				bonus = totalComp - baseGross
 			}
 		} else {
-			bonus = roundTaka(baseGross * m.config.FestivalBonusRatio)
-			totalComp = baseGross + bonus
+			if festivalPct > 0 {
+				// festival percent is percent of basic pay
+				bonus = roundTaka(basic * festivalPct / 100.0)
+				totalComp = baseGross + bonus
+			} else {
+				// fallback to old config ratio
+				bonus = roundTaka(baseGross * m.config.FestivalBonusRatio)
+				totalComp = baseGross + bonus
+			}
 		}
 	} else {
+		// non-custom behavior preserved
 		if bonusIncluded {
 			totalComp = roundTaka(totalInput)
 			if totalComp <= 0 {
@@ -929,8 +943,20 @@ func buildReport(m model) Report {
 
 	r.CombinedBeforeSurch = r.CurrentTaxAfterRebate + r.PreviousTax
 
-	r.SurchargeRate = determineSurchargeRate(netWealth, applySurcharge, surchargeMode, m.config)
-	if r.SurchargeRate > 0 && netWealth > m.config.SurchargeThreshold {
+	// Liabilities & assets processing
+	totalLiabilities := bankLoan + personalLoan + creditCard + otherLiabilities
+	r.TotalLiabilities = roundTaka(totalLiabilities)
+	r.TotalAssets = roundTaka(totalAssets)
+
+	// Decide which net wealth to use:
+	netWealthUsed := netWealthInput
+	if totalAssets > 0 {
+		netWealthUsed = totalAssets - totalLiabilities
+	}
+	r.NetWealthCurrent = roundTaka(netWealthUsed)
+
+	r.SurchargeRate = determineSurchargeRate(netWealthUsed, applySurcharge, surchargeMode, m.config)
+	if r.SurchargeRate > 0 && netWealthUsed > m.config.SurchargeThreshold {
 		r.SurchargeAmount = roundTaka(r.CombinedBeforeSurch * r.SurchargeRate)
 	}
 	r.FinalTax = r.CombinedBeforeSurch + r.SurchargeAmount
@@ -940,7 +966,7 @@ func buildReport(m model) Report {
 		r.ExpensePcts, r.ExpenseAmts = computeAllocation(totalExpense, location, familySize, hasKids, ownHome, hasStaff, mode)
 	}
 
-	r.WealthIncrease = netWealth - openingWealth
+	r.WealthIncrease = r.NetWealthCurrent - r.OpeningNetWealth
 	r.ExpectedSavings = totalComp - deductions - totalExpense - r.FinalTax
 	r.WealthDifference = r.WealthIncrease - r.ExpectedSavings
 
@@ -952,6 +978,15 @@ func buildReport(m model) Report {
 		r.WealthStatus = "ALERT — reported wealth is higher than estimated savings."
 	default:
 		r.WealthStatus = "Wealth increase is lower than estimated savings."
+	}
+
+	// Audit risk indicator (simple rule derived from wealth mismatch)
+	if strings.HasPrefix(r.WealthStatus, "ALERT") {
+		r.AuditRisk = "HIGH"
+	} else if strings.HasPrefix(r.WealthStatus, "OK") {
+		r.AuditRisk = "LOW"
+	} else {
+		r.AuditRisk = "MEDIUM"
 	}
 
 	r.ReportText = formatReport(r)
@@ -1134,8 +1169,15 @@ func formatReport(r Report) string {
 		sb.WriteString("\n")
 	}
 
+	// Wealth summary & audit risk
+	sb.WriteString(subTitleStyle.Render(" WEALTH SUMMARY ") + "\n")
+	sb.WriteString(kvLine("Total assets (provided)", r.TotalAssets))
+	sb.WriteString(kvLine("Total liabilities", r.TotalLiabilities))
+	sb.WriteString(kvLine("Net wealth (used)", r.NetWealthCurrent))
+	sb.WriteString(fmt.Sprintf("%-34s %s\n", "Audit risk", r.AuditRisk))
+	sb.WriteString("\n")
+
 	sb.WriteString(subTitleStyle.Render(" WEALTH CHECK ") + "\n")
-	sb.WriteString(kvLine("Current net wealth", r.NetWealthCurrent))
 	sb.WriteString(kvLine("Opening net wealth", r.OpeningNetWealth))
 	sb.WriteString(kvLine("Wealth increase", r.WealthIncrease))
 	sb.WriteString(kvLine("Estimated after-tax savings", r.ExpectedSavings))
@@ -1348,19 +1390,7 @@ func renderPieChart(title string, items []TaxLine, width int) string {
 	bar.WriteString(title + "\n")
 	center := ""
 	for i := 0; i < segmentCount; i++ {
-		pos := (float64(i) + 0.5) / float64(segmentCount)
-		cumulative := 0.0
-		picked := len(filtered) - 1
-		for idx, it := range filtered {
-			share := it.Tax / total
-			if pos <= cumulative+share || idx == len(filtered)-1 {
-				picked = idx
-				break
-			}
-			cumulative += share
-		}
 		center += "●"
-		_ = picked
 	}
 	if width > len(center) {
 		bar.WriteString(strings.Repeat(" ", (width-len(center))/2))
@@ -1423,9 +1453,11 @@ func renderDetailsPanel(width int) string {
 	write("Annual Salary / Total Package", "Enter gross annual salary or the total package amount. Expressions like 12809*23 and shorthands like 1 lakh, 2cr, 4.5k are accepted.")
 	write("Festival bonus already included?", "Use y if the salary figure already includes festival bonus. Use n if you want the tool to estimate the bonus separately.")
 	write("Custom salary breakdown?", "Enable if you want to provide exact salary components such as basic, house rent, medical, food, transport and mobile allowances.")
+	write("Festival bonus % (when custom)", "If you enable custom breakdown you may specify festival bonus as percentage of BASIC salary (e.g., 10 for 10%). If left blank, the default ratio from config is used.")
 	write("Total annual expense", "Used for IT-10BB style allocation. The tool distributes every taka into expense buckets without drift.")
 	write("Location / family / home / staff / mode", "Used to adjust household allocation weights. Dhaka increases housing weight; conservative mode reduces festival and support expenses.")
 	write("Investment for rebate", "Eligible investment amount for the Bangladesh general tax rebate. The tool applies the lower of 3% of taxable income, 15% of investment, and Tk 10 lakh by default.")
+	write("Net wealth & liabilities", "Provide net wealth directly (fallback) or enter Total Assets plus liabilities (bank loans, personal loans, credit card dues, other liabilities). If Total Assets is provided it overrides manual net wealth input and computes Net Wealth = Total Assets - Total Liabilities.")
 	write("Reverse calculator", "If enabled, you can enter a target net take-home amount. The tool estimates the gross salary needed to reach that net after tax and deductions.")
 	write("Save / load", "Ctrl+S saves the current session as JSON with SHA256 integrity. Ctrl+L loads it back after verifying the hash.")
 	write("PDF / CSV / Markdown export", "Ctrl+P exports a professional PDF. Ctrl+E exports CSV. Ctrl+M exports Markdown.")
@@ -1539,11 +1571,14 @@ func exportCSV(path string, r Report) error {
 		{"Previous year tax", formatMoney(int(roundTaka(r.PreviousTax)))},
 		{"Surcharge amount", formatMoney(int(roundTaka(r.SurchargeAmount)))},
 		{"Final tax", formatMoney(int(roundTaka(r.FinalTax)))},
+		{"Total assets (provided)", formatMoney(int(roundTaka(r.TotalAssets)))},
+		{"Total liabilities", formatMoney(int(roundTaka(r.TotalLiabilities)))},
 		{"Current net wealth", formatMoney(int(roundTaka(r.NetWealthCurrent)))},
 		{"Opening net wealth", formatMoney(int(roundTaka(r.OpeningNetWealth)))},
 		{"Wealth increase", formatMoney(int(roundTaka(r.WealthIncrease)))},
 		{"Estimated after-tax savings", formatMoney(int(roundTaka(r.ExpectedSavings)))},
 		{"Wealth status", r.WealthStatus},
+		{"Audit risk", r.AuditRisk},
 	}
 	for _, row := range rows {
 		if err := w.Write(row); err != nil {
@@ -1595,6 +1630,11 @@ func exportMarkdown(path string, r Report) error {
 	}
 
 	sb.WriteString("## Wealth check\n\n")
+	sb.WriteString(fmt.Sprintf("* Total assets: Tk %s\n", formatMoney(int(roundTaka(r.TotalAssets)))))
+	sb.WriteString(fmt.Sprintf("* Total liabilities: Tk %s\n", formatMoney(int(roundTaka(r.TotalLiabilities)))))
+	sb.WriteString(fmt.Sprintf("* Net wealth (used): Tk %s\n", formatMoney(int(roundTaka(r.NetWealthCurrent)))))
+	sb.WriteString(fmt.Sprintf("* Audit risk: %s\n\n", r.AuditRisk))
+
 	sb.WriteString(fmt.Sprintf("* Wealth increase: Tk %s\n", formatMoney(int(roundTaka(r.WealthIncrease)))))
 	sb.WriteString(fmt.Sprintf("* Estimated savings: Tk %s\n", formatMoney(int(roundTaka(r.ExpectedSavings)))))
 	sb.WriteString(fmt.Sprintf("* Status: %s\n\n", r.WealthStatus))
@@ -1699,9 +1739,11 @@ func exportPDF(path string, r Report, cfg Config) error {
 		kv("Total annual expenditure", "Tk "+formatMoney(int(roundTaka(r.TotalExpense))))
 	}
 
-	section("Wealth Check")
-	kv("Current net wealth", "Tk "+formatMoney(int(roundTaka(r.NetWealthCurrent))))
-	kv("Opening net wealth", "Tk "+formatMoney(int(roundTaka(r.OpeningNetWealth))))
+	section("Wealth Summary & Audit")
+	kv("Total assets (provided)", "Tk "+formatMoney(int(roundTaka(r.TotalAssets))))
+	kv("Total liabilities", "Tk "+formatMoney(int(roundTaka(r.TotalLiabilities))))
+	kv("Net wealth (used)", "Tk "+formatMoney(int(roundTaka(r.NetWealthCurrent))))
+	kv("Audit risk", r.AuditRisk)
 	kv("Wealth increase", "Tk "+formatMoney(int(roundTaka(r.WealthIncrease))))
 	kv("Estimated after-tax savings", "Tk "+formatMoney(int(roundTaka(r.ExpectedSavings))))
 	kv("Status", r.WealthStatus)
@@ -1786,7 +1828,6 @@ func evalExpression(expr string) (float64, error) {
 	}
 	var tokens []token
 	i := 0
-	var prev *token
 
 	for i < len(expr) {
 		ch := expr[i]
@@ -1794,163 +1835,97 @@ func evalExpression(expr string) (float64, error) {
 		case ch == ' ' || ch == '\t' || ch == '\n':
 			i++
 		case (ch >= '0' && ch <= '9') || ch == '.':
-			j := i
-			for j < len(expr) && ((expr[j] >= '0' && expr[j] <= '9') || expr[j] == '.') {
-				j++
+			start := i
+			for i < len(expr) && ((expr[i] >= '0' && expr[i] <= '9') || expr[i] == '.') {
+				i++
 			}
-			tokens = append(tokens, token{typ: "num", val: expr[i:j]})
-			prev = &tokens[len(tokens)-1]
-			i = j
-		case ch == '+' || ch == '-' || ch == '*' || ch == '/':
-			if ch == '-' && (prev == nil || prev.typ == "op" || prev.val == "(") {
-				tokens = append(tokens, token{typ: "num", val: "0"})
-				prev = &tokens[len(tokens)-1]
-			}
+			tokens = append(tokens, token{typ: "num", val: expr[start:i]})
+		case ch == '+' || ch == '-' || ch == '*' || ch == '/' || ch == '(' || ch == ')':
 			tokens = append(tokens, token{typ: "op", val: string(ch)})
-			prev = &tokens[len(tokens)-1]
-			i++
-		case ch == '(' || ch == ')':
-			tokens = append(tokens, token{typ: string(ch), val: string(ch)})
-			prev = &tokens[len(tokens)-1]
 			i++
 		default:
-			return 0, fmt.Errorf("invalid character: %q", ch)
+			// skip other characters (letters, etc.)
+			i++
 		}
 	}
 
-	var out []token
-	var ops []token
-	prec := map[string]int{"+": 1, "-": 1, "*": 2, "/": 2}
-
-	for _, tk := range tokens {
-		switch tk.typ {
-		case "num":
-			out = append(out, tk)
-		case "op":
-			for len(ops) > 0 {
-				top := ops[len(ops)-1]
-				if top.typ == "op" && prec[top.val] >= prec[tk.val] {
-					out = append(out, top)
-					ops = ops[:len(ops)-1]
-					continue
+	// shunting-yard to RPN
+	out := []token{}
+	st := []token{}
+	prec := func(op string) int {
+		switch op {
+		case "+", "-":
+			return 1
+		case "*", "/":
+			return 2
+		}
+		return 0
+	}
+	for _, t := range tokens {
+		if t.typ == "num" {
+			out = append(out, t)
+		} else if t.typ == "op" {
+			if t.val == "(" {
+				st = append(st, t)
+			} else if t.val == ")" {
+				for len(st) > 0 && st[len(st)-1].val != "(" {
+					out = append(out, st[len(st)-1])
+					st = st[:len(st)-1]
 				}
-				break
-			}
-			ops = append(ops, tk)
-		case "(":
-			ops = append(ops, tk)
-		case ")":
-			found := false
-			for len(ops) > 0 {
-				top := ops[len(ops)-1]
-				ops = ops[:len(ops)-1]
-				if top.typ == "(" {
-					found = true
-					break
+				if len(st) > 0 && st[len(st)-1].val == "(" {
+					st = st[:len(st)-1]
 				}
-				out = append(out, top)
-			}
-			if !found {
-				return 0, fmt.Errorf("mismatched parentheses")
+			} else {
+				for len(st) > 0 && prec(st[len(st)-1].val) >= prec(t.val) {
+					out = append(out, st[len(st)-1])
+					st = st[:len(st)-1]
+				}
+				st = append(st, t)
 			}
 		}
 	}
-
-	for len(ops) > 0 {
-		top := ops[len(ops)-1]
-		ops = ops[:len(ops)-1]
-		if top.typ == "(" || top.typ == ")" {
-			return 0, fmt.Errorf("mismatched parentheses")
-		}
-		out = append(out, top)
+	for len(st) > 0 {
+		out = append(out, st[len(st)-1])
+		st = st[:len(st)-1]
 	}
-
-	var st []float64
-	for _, tk := range out {
-		switch tk.typ {
-		case "num":
-			f, err := strconv.ParseFloat(tk.val, 64)
-			if err != nil {
-				return 0, err
+	// evaluate RPN
+	ev := []float64{}
+	for _, t := range out {
+		if t.typ == "num" {
+			v, _ := strconv.ParseFloat(t.val, 64)
+			ev = append(ev, v)
+		} else if t.typ == "op" {
+			if len(ev) < 2 {
+				return 0, fmt.Errorf("bad expression")
 			}
-			st = append(st, f)
-		case "op":
-			if len(st) < 2 {
-				return 0, fmt.Errorf("invalid expression")
-			}
-			b := st[len(st)-1]
-			a := st[len(st)-2]
-			st = st[:len(st)-2]
-			var r float64
-			switch tk.val {
+			b := ev[len(ev)-1]
+			a := ev[len(ev)-2]
+			ev = ev[:len(ev)-2]
+			switch t.val {
 			case "+":
-				r = a + b
+				ev = append(ev, a+b)
 			case "-":
-				r = a - b
+				ev = append(ev, a-b)
 			case "*":
-				r = a * b
+				ev = append(ev, a*b)
 			case "/":
 				if b == 0 {
 					return 0, fmt.Errorf("division by zero")
 				}
-				r = a / b
+				ev = append(ev, a/b)
+			default:
+				return 0, fmt.Errorf("unknown op")
 			}
-			st = append(st, r)
 		}
 	}
-	if len(st) != 1 {
-		return 0, fmt.Errorf("invalid expression")
+	if len(ev) != 1 {
+		return 0, fmt.Errorf("bad expression")
 	}
-	return st[0], nil
-}
-
-func formatMoney(n int) string {
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	s := strconv.Itoa(n)
-	if len(s) <= 3 {
-		if neg {
-			return "-" + s
-		}
-		return s
-	}
-	var parts []string
-	for i := len(s); i > 0; i -= 3 {
-		start := i - 3
-		if start < 0 {
-			start = 0
-		}
-		parts = append([]string{s[start:i]}, parts...)
-	}
-	out := strings.Join(parts, ",")
-	if neg {
-		return "-" + out
-	}
-	return out
-}
-
-func roundTaka(v float64) float64 {
-	return math.Round(v)
-}
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
+	return ev[0], nil
 }
 
 func ensureExt(path, ext string) string {
-	if filepath.Ext(path) == "" {
+	if !strings.HasSuffix(strings.ToLower(path), strings.ToLower(ext)) {
 		return path + ext
 	}
 	return path
@@ -1964,10 +1939,87 @@ func currentValues(inputs []textinput.Model) []string {
 	return out
 }
 
+func formatMoney(v int) string {
+	s := strconv.Itoa(v)
+	// insert commas every 3 digits from right
+	n := len(s)
+	if n <= 3 {
+		return s
+	}
+	var parts []string
+	for n > 3 {
+		parts = append([]string{s[n-3 : n]}, parts...)
+		n -= 3
+		if n <= 3 {
+			parts = append([]string{s[0:n]}, parts...)
+		}
+	}
+	return strings.Join(parts, ",")
+}
+
+func roundTaka(f float64) float64 {
+	return math.Round(f)
+}
+
+func openPrompt(m model, mode promptMode, defaultPath, placeholder string) (model, tea.Cmd) {
+	m.promptMode = mode
+	m.promptActive = true
+	m.prompt.SetValue(defaultPath)
+	m.prompt.Placeholder = placeholder
+	m.state = statePrompt
+	return m, nil
+}
+
+// method on model to open prompt (wrapper)
+func (m model) openPrompt(mode promptMode, defaultPath, placeholder string) (model, tea.Cmd) {
+	newM := m
+	newM.promptMode = mode
+	newM.promptActive = true
+	newM.prompt.SetValue(defaultPath)
+	newM.prompt.Placeholder = placeholder
+	newM.state = statePrompt
+	return newM, nil
+}
+
+func renderTaxPieChartString(tax, surcharge float64, width int) string {
+	return renderTaxPieChart(tax, surcharge, width)
+}
+
+func formatMoneyFromFloat(f float64) string {
+	return formatMoney(int(roundTaka(f)))
+}
+
+func renderDetailsPanelString(width int) string {
+	return renderDetailsPanel(width)
+}
+
+func renderBannerString(w int) string {
+	return renderBanner(w)
+}
+
+func renderScrollableTextString(content string, offset, height int) string {
+	return renderScrollableText(content, offset, height)
+}
+
 func main() {
-	p := tea.NewProgram(initialModel(), tea.WithAltScreen())
-	if _, err := p.Run(); err != nil {
-		fmt.Println("Error:", err)
+	// Launch TUI
+	m := initialModel()
+	if err := tea.NewProgram(m, tea.WithAltScreen()).Start(); err != nil {
+		fmt.Printf("Error starting program: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// small helpers used earlier
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
