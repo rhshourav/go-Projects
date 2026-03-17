@@ -363,10 +363,15 @@ func triggerCalculation() tea.Cmd {
 }
 
 var bannerLines = []string{
-	"╭────────────────────────────╮",
-	"│        rhshourav           │",
-	"│   cyber • code • security  │",
-	"╰────────────────────────────╯",
+	"╭────────────────────────────────────────────────────────╮",
+	"│                                                        │",
+	"│   _ __| |__  ___| |__   ___  _   _ _ __ __ ___   __    │",
+	"│  | '__| '_ \\/ __| '_ \\ / _ \\| | | | '__/ _' \\ \\ / /    │",
+	"│  | |  | | | \\__ \\ | | | (_) | |_| | | | (_| |\\ V /     │",
+	"│  |_|  |_| |_|___/_| |_|\\___/ \\__,_|_|  \\__,_| \\_/      │",
+	"│                                                        │",
+	"│           cyber • code • system • security             │",
+	"╰────────────────────────────────────────────────────────╯",
 }
 
 var gradientColors = []string{
@@ -737,20 +742,20 @@ func generateResults(m model) string {
 			hra := int(math.Round(cHra))
 			med := int(math.Round(cMed))
 			conv := int(math.Round(cTrans))
-			festivalBonus = int(math.Round(float64(basic) / 6.0))
-			totalSalary = int(math.Round(totalSalaryInput))
-			baseSalary = totalSalary - festivalBonus
-			if baseSalary < 0 {
-				baseSalary = 0
-			}
+			food := int(math.Round(cFood))
+			mob := int(math.Round(cMob))
 
-			sum := basic + hra + med + conv + int(math.Round(cFood)) + int(math.Round(cMob)) + festivalBonus
-			if sum != totalSalary {
-				adj := totalSalary - sum
-				conv += adj
-				if conv < 0 {
-					conv = 0
+			totalSalary = int(math.Round(totalSalaryInput))
+			baseSalary = basic + hra + med + conv + food + mob
+
+			if totalSalary > 0 && bonusIncluded {
+				festivalBonus = totalSalary - baseSalary
+				if festivalBonus < 0 {
+					festivalBonus = 0
 				}
+			} else {
+				festivalBonus = int(math.Round(float64(basic) / 6.0))
+				totalSalary = baseSalary + festivalBonus
 			}
 
 			exempt := math.Min(float64(totalSalary)/3.0, 450000)
@@ -760,6 +765,12 @@ func generateResults(m model) string {
 			sb.WriteString(fmt.Sprintf("%-30s | %s\n", "House rent", moneyStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(hra)))))
 			sb.WriteString(fmt.Sprintf("%-30s | %s\n", "Medical Allowance", moneyStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(med)))))
 			sb.WriteString(fmt.Sprintf("%-30s | %s\n", "Conveyance Allowance", moneyStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(conv)))))
+			if food > 0 {
+				sb.WriteString(fmt.Sprintf("%-30s | %s\n", "Food Allowance", moneyStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(food)))))
+			}
+			if mob > 0 {
+				sb.WriteString(fmt.Sprintf("%-30s | %s\n", "Mobile & Other", moneyStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(mob)))))
+			}
 			sb.WriteString(fmt.Sprintf("%-30s | %s\n", "Gross salary", moneyStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(baseSalary)))))
 			sb.WriteString(fmt.Sprintf("%-30s | %s\n", "Festival Bonus", moneyStyle.Render(fmt.Sprintf("Tk %10s", formatMoney(festivalBonus)))))
 			sb.WriteString(strings.Repeat("-", 60) + "\n")
