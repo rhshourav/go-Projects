@@ -203,8 +203,7 @@ var (
 			Foreground(lipgloss.Color("#666666"))
 
 	keyStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#0EA5E9")).
-			Bold(true)
+			Foreground(lipgloss.Color("#0EA5E9")).Bold(true)
 
 	moneyStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#16A34A"))
 	taxStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#DC2626")).Bold(true)
@@ -221,7 +220,7 @@ func defaultConfig() Config {
 		TaxYear:               "2025-26",
 		SalaryExemptionCap:    500000,
 		MinimumTax:            3000,
-		FestivalBonusRatio:    42714.0 / 344475.0, // fallback
+		FestivalBonusRatio:    42714.0 / 344475.0, // fallback (kept for backwards compatibility)
 		RebatePctOfTaxable:    0.03,
 		RebatePctOfInvestment: 0.15,
 		RebateMaxAmount:       1000000,
@@ -309,7 +308,7 @@ func initialModel() model {
 		"   -> Food allowance (annual BDT) [default: 0]",                             // 6
 		"   -> Transport / conveyance (annual BDT) [default: 0]",                     // 7
 		"   -> Mobile & other allowance (annual BDT) [default: 0]",                   // 8
-		"   -> Festival bonus % of basic (when custom) [default: use config]",        // 9
+		"   -> Festival bonus % of ONE MONTH BASIC (when custom) [default: 100%]",    // 9
 		"4. Total annual expense (BDT) [default: 0]",                                 // 10
 		"5. Location (dhaka/other) [default: other]",                                 // 11
 		"6. Family size [default: 3]",                                                // 12
@@ -640,7 +639,7 @@ func (m model) visibleSteps() []int {
 	}
 	// remaining inputs start at 10 .. 30
 	steps = append(steps, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27)
-	// reverse calculator fields (29,30) are conditional on reverseEnabled (index 28)
+	// reverse calculator fields (28,29,30) are conditional on reverseEnabled (index 28)
 	if boolVal(m.inputs[28].Value(), false) {
 		steps = append(steps, 28, 29, 30)
 	} else {
@@ -832,7 +831,7 @@ func buildReport(m model) Report {
 	food := parseNumeric(getVal(m.inputs[6].Value(), "0"))
 	trans := parseNumeric(getVal(m.inputs[7].Value(), "0"))
 	mobile := parseNumeric(getVal(m.inputs[8].Value(), "0"))
-	festivalPct := parseNumeric(getVal(m.inputs[9].Value(), "0")) // new: percent of basic when custom
+	festivalPct := parseNumeric(getVal(m.inputs[9].Value(), "0")) // new: percent of ONE MONTH BASIC when custom
 
 	totalExpense := parseNumeric(getVal(m.inputs[10].Value(), "0"))
 	location := strings.ToLower(getVal(m.inputs[11].Value(), "other"))
@@ -881,8 +880,13 @@ func buildReport(m model) Report {
 		if totalComp <= 0 {
 			totalComp = baseGross
 		}
-		// If custom and user provided festival percent, use it (percentage of basic)
+		// For custom breakdown festivalPct is percent of ONE MONTH BASIC.
+		// Default: 100% (one full month) if user leaves it blank or zero.
+		if festivalPct <= 0 {
+			festivalPct = 100.0
+		}
 		if bonusIncluded {
+			// If user indicated the totalComp already includes bonus, respect it.
 			if totalComp < baseGross {
 				bonus = 0
 				totalComp = baseGross
@@ -890,29 +894,26 @@ func buildReport(m model) Report {
 				bonus = totalComp - baseGross
 			}
 		} else {
-			if festivalPct > 0 {
-				// festival percent is percent of basic pay
-				bonus = roundTaka(basic * festivalPct / 100.0)
-				totalComp = baseGross + bonus
-			} else {
-				// fallback to old config ratio
-				bonus = roundTaka(baseGross * m.config.FestivalBonusRatio)
-				totalComp = baseGross + bonus
-			}
+			// festival bonus = (basic / 12) * (festivalPct / 100)
+			monthlyBasic := basic / 12.0
+			bonus = roundTaka(monthlyBasic * (festivalPct / 100.0))
+			totalComp = baseGross + bonus
 		}
 	} else {
-		// non-custom behavior preserved
+		// non-custom behaviour preserved
 		if bonusIncluded {
 			totalComp = roundTaka(totalInput)
 			if totalComp <= 0 {
 				totalComp = 0
 			}
+			// fallback: derive baseGross assuming config festival ratio
 			baseGross = roundTaka(totalComp / (1 + m.config.FestivalBonusRatio))
 			bonus = totalComp - baseGross
 		} else {
 			baseGross = roundTaka(totalInput)
 			totalComp = baseGross
 			if baseGross > 0 {
+				// fallback festival bonus = baseGross * config ratio (legacy)
 				bonus = roundTaka(baseGross * m.config.FestivalBonusRatio)
 				totalComp = baseGross + bonus
 			}
@@ -944,6 +945,9 @@ func buildReport(m model) Report {
 	r.CombinedBeforeSurch = r.CurrentTaxAfterRebate + r.PreviousTax
 
 	// Liabilities & assets processing
+	_ = creditCard
+	_ = otherLiabilities
+	_ = personalLoan
 	totalLiabilities := bankLoan + personalLoan + creditCard + otherLiabilities
 	r.TotalLiabilities = roundTaka(totalLiabilities)
 	r.TotalAssets = roundTaka(totalAssets)
@@ -1023,6 +1027,7 @@ func estimateGrossFromNet(targetNet, deductions float64, m model, seedGross floa
 }
 
 func estimateNetFromGross(baseGross, deductions float64, m model) float64 {
+	// Use config festival ratio for non-custom estimate
 	bonus := roundTaka(baseGross * m.config.FestivalBonusRatio)
 	total := baseGross + bonus
 	exempt := math.Min(total/3.0, m.config.SalaryExemptionCap)
@@ -1116,7 +1121,7 @@ func formatReport(r Report) string {
 	sb.WriteString(kvLine("Annual salary input", r.SalaryInput))
 	if r.CustomSalary {
 		sb.WriteString(kvLine("Basic gross salary", r.BaseGrossSalary))
-		sb.WriteString(kvLine("Festival bonus", r.BonusAmount))
+		sb.WriteString(kvLine("Festival bonus (one-month %)", r.BonusAmount))
 	} else {
 		sb.WriteString(kvLine("Base gross salary", r.BaseGrossSalary))
 		sb.WriteString(kvLine("Festival bonus", r.BonusAmount))
@@ -1453,14 +1458,14 @@ func renderDetailsPanel(width int) string {
 	write("Annual Salary / Total Package", "Enter gross annual salary or the total package amount. Expressions like 12809*23 and shorthands like 1 lakh, 2cr, 4.5k are accepted.")
 	write("Festival bonus already included?", "Use y if the salary figure already includes festival bonus. Use n if you want the tool to estimate the bonus separately.")
 	write("Custom salary breakdown?", "Enable if you want to provide exact salary components such as basic, house rent, medical, food, transport and mobile allowances.")
-	write("Festival bonus % (when custom)", "If you enable custom breakdown you may specify festival bonus as percentage of BASIC salary (e.g., 10 for 10%). If left blank, the default ratio from config is used.")
+	write("Festival bonus % (when custom)", "Festival bonus is now calculated as a percent of ONE MONTH BASIC: (basic / 12) * (pct/100). Default is 100% (one full month's basic).")
 	write("Total annual expense", "Used for IT-10BB style allocation. The tool distributes every taka into expense buckets without drift.")
 	write("Location / family / home / staff / mode", "Used to adjust household allocation weights. Dhaka increases housing weight; conservative mode reduces festival and support expenses.")
 	write("Investment for rebate", "Eligible investment amount for the Bangladesh general tax rebate. The tool applies the lower of 3% of taxable income, 15% of investment, and Tk 10 lakh by default.")
 	write("Net wealth & liabilities", "Provide net wealth directly (fallback) or enter Total Assets plus liabilities (bank loans, personal loans, credit card dues, other liabilities). If Total Assets is provided it overrides manual net wealth input and computes Net Wealth = Total Assets - Total Liabilities.")
 	write("Reverse calculator", "If enabled, you can enter a target net take-home amount. The tool estimates the gross salary needed to reach that net after tax and deductions.")
 	write("Save / load", "Ctrl+S saves the current session as JSON with SHA256 integrity. Ctrl+L loads it back after verifying the hash.")
-	write("PDF / CSV / Markdown export", "Ctrl+P exports a professional PDF. Ctrl+E exports CSV. Ctrl+M exports Markdown.")
+	write("PDF / CSV / Markdown export", "Ctrl+P exports a professional PDF including your logo.png (if present) and a watermark. Ctrl+E exports CSV. Ctrl+M exports Markdown.")
 	return boxStyle.Width(w).Render(sb.String())
 }
 
@@ -1635,10 +1640,6 @@ func exportMarkdown(path string, r Report) error {
 	sb.WriteString(fmt.Sprintf("* Net wealth (used): Tk %s\n", formatMoney(int(roundTaka(r.NetWealthCurrent)))))
 	sb.WriteString(fmt.Sprintf("* Audit risk: %s\n\n", r.AuditRisk))
 
-	sb.WriteString(fmt.Sprintf("* Wealth increase: Tk %s\n", formatMoney(int(roundTaka(r.WealthIncrease)))))
-	sb.WriteString(fmt.Sprintf("* Estimated savings: Tk %s\n", formatMoney(int(roundTaka(r.ExpectedSavings)))))
-	sb.WriteString(fmt.Sprintf("* Status: %s\n\n", r.WealthStatus))
-
 	if r.ReverseEnabled && r.TargetNetTakeHome > 0 {
 		sb.WriteString("## Reverse calculator\n\n")
 		sb.WriteString(fmt.Sprintf("* Target net take-home: Tk %s\n", formatMoney(int(roundTaka(r.TargetNetTakeHome)))))
@@ -1653,11 +1654,16 @@ func exportPDF(path string, r Report, cfg Config) error {
 	pdf.SetAutoPageBreak(true, 12)
 	pdf.AddPage()
 
-	// Header
-	if _, err := os.Stat("logo.png"); err == nil {
-		pdf.ImageOptions("logo.png", 12, 12, 24, 0, false, gofpdf.ImageOptions{ImageType: "", ReadDpi: true}, 0, "")
-		pdf.SetXY(40, 14)
+	// Header: try to use logo.png in current directory (expected 124x124 px).
+	// Convert 124px @ 96 DPI -> mm: (124/96)*25.4 ≈ 32.75 mm
+	logoSizeMM := (124.0 / 96.0) * 25.4
+	logoPath := "logo.png"
+	if _, err := os.Stat(logoPath); err == nil {
+		// place logo at left margin
+		pdf.ImageOptions(logoPath, 12, 12, logoSizeMM, logoSizeMM, false, gofpdf.ImageOptions{ImageType: "", ReadDpi: true}, 0, "")
+		pdf.SetXY(12+logoSizeMM+6, 14)
 	} else {
+		// fallback placeholder square
 		pdf.SetDrawColor(11, 107, 58)
 		pdf.SetFillColor(11, 107, 58)
 		pdf.Rect(12, 12, 22, 22, "DF")
@@ -1668,6 +1674,7 @@ func exportPDF(path string, r Report, cfg Config) error {
 		pdf.SetTextColor(0, 0, 0)
 		pdf.SetXY(40, 14)
 	}
+
 	pdf.SetFont("Arial", "B", 18)
 	pdf.CellFormat(0, 8, "Tax Companion Report", "", 1, "L", false, 0, "")
 	pdf.SetFont("Arial", "", 10)
@@ -1733,13 +1740,11 @@ func exportPDF(path string, r Report, cfg Config) error {
 				continue
 			}
 			pdf.CellFormat(92, 6, k, "", 0, "L", false, 0, "")
-			pdf.CellFormat(12, 6, fmt.Sprintf("%d%%", r.ExpensePcts[k]), "", 0, "R", false, 0, "")
-			pdf.CellFormat(0, 6, "Tk "+formatMoney(r.ExpenseAmts[k]), "", 1, "R", false, 0, "")
+			pdf.CellFormat(0, 6, fmt.Sprintf("%d%%   Tk %s", r.ExpensePcts[k], formatMoney(r.ExpenseAmts[k])), "", 1, "R", false, 0, "")
 		}
-		kv("Total annual expenditure", "Tk "+formatMoney(int(roundTaka(r.TotalExpense))))
 	}
 
-	section("Wealth Summary & Audit")
+	section("Wealth Summary")
 	kv("Total assets (provided)", "Tk "+formatMoney(int(roundTaka(r.TotalAssets))))
 	kv("Total liabilities", "Tk "+formatMoney(int(roundTaka(r.TotalLiabilities))))
 	kv("Net wealth (used)", "Tk "+formatMoney(int(roundTaka(r.NetWealthCurrent))))
@@ -1748,17 +1753,50 @@ func exportPDF(path string, r Report, cfg Config) error {
 	kv("Estimated after-tax savings", "Tk "+formatMoney(int(roundTaka(r.ExpectedSavings))))
 	kv("Status", r.WealthStatus)
 
-	if r.ReverseEnabled && r.TargetNetTakeHome > 0 {
-		section("Reverse Calculator")
-		kv("Target net take-home", "Tk "+formatMoney(int(roundTaka(r.TargetNetTakeHome))))
-		kv("Extra deductions", "Tk "+formatMoney(int(roundTaka(r.Deductions))))
-		kv("Estimated gross salary", "Tk "+formatMoney(int(roundTaka(r.EstimatedGrossFromNet))))
-	}
-
 	section("Summary")
 	pdf.MultiCell(0, 5, "This report summarizes salary, tax, rebate, surcharge, expense allocation, wealth consistency and reverse salary estimation. Values depend on the inputs provided in the TUI and the tax slab configuration.", "", "L", false)
 
+	// Add watermark on every page
+	totalPages := pdf.PageNo()
+	for p := 1; p <= totalPages; p++ {
+		pdf.SetPage(p)
+		addWatermark(pdf, "Companion by rhshourav")
+	}
+
 	return pdf.OutputFileAndClose(path)
+}
+
+// addWatermark draws a light rotated watermark text on the page center.
+func addWatermark(pdf *gofpdf.Fpdf, text string) {
+	// Save graphics state
+	pdf.SetFont("Arial", "B", 48)
+	// light gray
+	pdf.SetTextColor(200, 200, 200)
+	// semi-transparent
+	pdf.SetAlpha(0.08, "Normal")
+
+	// Get page dimensions
+	pageW, pageH := pdf.GetPageSize()
+	// center coordinates
+	cx := pageW / 2.0
+	cy := pageH / 2.0
+
+	// Rotate around center and write text
+	pdf.TransformBegin()
+	// rotate 45 degrees around center
+	pdf.TransformRotate(45, cx, cy)
+	// approximate width of string in current font/size
+	wd := pdf.GetStringWidth(text)
+	// position text centered
+	x := cx - wd/2.0
+	y := cy
+	pdf.Text(x, y, text)
+	pdf.TransformEnd()
+
+	// reset alpha to full
+	pdf.SetAlpha(1.0, "Normal")
+	// reset color to black
+	pdf.SetTextColor(0, 0, 0)
 }
 
 func drawRule(pdf *gofpdf.Fpdf) {
@@ -1808,120 +1846,148 @@ func parseNumeric(s string) float64 {
 		{regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*(m|mn|million)\b`), "$1*1000000"},
 		{regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*(lakh|lac|lacs)\b`), "$1*100000"},
 		{regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*(cr|crore|crores)\b`), "$1*10000000"},
-		{regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*(tk|taka)\b`), "$1"},
+		{regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*%`), "$1/100"},
 	}
 	for _, r := range replacements {
 		s = r.re.ReplaceAllString(s, r.repl)
 	}
-	v, err := evalExpression(s)
-	if err == nil {
-		return v
-	}
-	f, _ := strconv.ParseFloat(s, 64)
-	return f
-}
 
-func evalExpression(expr string) (float64, error) {
-	type token struct {
-		typ string
-		val string
-	}
-	var tokens []token
-	i := 0
-
-	for i < len(expr) {
-		ch := expr[i]
-		switch {
-		case ch == ' ' || ch == '\t' || ch == '\n':
-			i++
-		case (ch >= '0' && ch <= '9') || ch == '.':
-			start := i
-			for i < len(expr) && ((expr[i] >= '0' && expr[i] <= '9') || expr[i] == '.') {
-				i++
-			}
-			tokens = append(tokens, token{typ: "num", val: expr[start:i]})
-		case ch == '+' || ch == '-' || ch == '*' || ch == '/' || ch == '(' || ch == ')':
-			tokens = append(tokens, token{typ: "op", val: string(ch)})
-			i++
-		default:
-			// skip other characters (letters, etc.)
-			i++
-		}
-	}
-
-	// shunting-yard to RPN
-	out := []token{}
-	st := []token{}
-	prec := func(op string) int {
-		switch op {
-		case "+", "-":
-			return 1
-		case "*", "/":
-			return 2
-		}
+	// evaluate simple expressions like 12809*23
+	val, err := evalSimpleExpression(s)
+	if err != nil {
 		return 0
 	}
-	for _, t := range tokens {
-		if t.typ == "num" {
-			out = append(out, t)
-		} else if t.typ == "op" {
-			if t.val == "(" {
-				st = append(st, t)
-			} else if t.val == ")" {
-				for len(st) > 0 && st[len(st)-1].val != "(" {
-					out = append(out, st[len(st)-1])
-					st = st[:len(st)-1]
-				}
-				if len(st) > 0 && st[len(st)-1].val == "(" {
-					st = st[:len(st)-1]
-				}
-			} else {
-				for len(st) > 0 && prec(st[len(st)-1].val) >= prec(t.val) {
-					out = append(out, st[len(st)-1])
-					st = st[:len(st)-1]
-				}
-				st = append(st, t)
-			}
-		}
+	return val
+}
+
+func evalSimpleExpression(expr string) (float64, error) {
+	// very small evaluator supporting + - * / and parentheses, integers and floats
+	expr = strings.TrimSpace(expr)
+	if expr == "" {
+		return 0, nil
 	}
-	for len(st) > 0 {
-		out = append(out, st[len(st)-1])
-		st = st[:len(st)-1]
-	}
-	// evaluate RPN
-	ev := []float64{}
-	for _, t := range out {
-		if t.typ == "num" {
-			v, _ := strconv.ParseFloat(t.val, 64)
-			ev = append(ev, v)
-		} else if t.typ == "op" {
-			if len(ev) < 2 {
-				return 0, fmt.Errorf("bad expression")
-			}
-			b := ev[len(ev)-1]
-			a := ev[len(ev)-2]
-			ev = ev[:len(ev)-2]
-			switch t.val {
-			case "+":
-				ev = append(ev, a+b)
-			case "-":
-				ev = append(ev, a-b)
-			case "*":
-				ev = append(ev, a*b)
-			case "/":
-				if b == 0 {
-					return 0, fmt.Errorf("division by zero")
-				}
-				ev = append(ev, a/b)
-			default:
-				return 0, fmt.Errorf("unknown op")
-			}
-		}
+	toks := tokenize(expr)
+	ev, err := parseExpr(toks)
+	if err != nil {
+		return 0, err
 	}
 	if len(ev) != 1 {
 		return 0, fmt.Errorf("bad expression")
 	}
 	return ev[0], nil
+}
+
+func tokenize(s string) []string {
+	var out []string
+	cur := ""
+	for _, r := range s {
+		switch {
+		case r == '+' || r == '-' || r == '*' || r == '/' || r == '(' || r == ')':
+			if cur != "" {
+				out = append(out, cur)
+				cur = ""
+			}
+			out = append(out, string(r))
+		case r == ' ' || r == '\t' || r == '\n':
+			if cur != "" {
+				out = append(out, cur)
+				cur = ""
+			}
+		default:
+			cur += string(r)
+		}
+	}
+	if cur != "" {
+		out = append(out, cur)
+	}
+	return out
+}
+
+func parseExpr(tokens []string) ([]float64, error) {
+	// Shunting-yard-lite using recursive descent for simplicity
+	var stackNums []float64
+	var stackOps []string
+
+	applyOp := func() error {
+		if len(stackNums) < 2 || len(stackOps) == 0 {
+			return nil
+		}
+		b := stackNums[len(stackNums)-1]
+		a := stackNums[len(stackNums)-2]
+		op := stackOps[len(stackOps)-1]
+		stackNums = stackNums[:len(stackNums)-2]
+		stackOps = stackOps[:len(stackOps)-1]
+		switch op {
+		case "+":
+			stackNums = append(stackNums, a+b)
+		case "-":
+			stackNums = append(stackNums, a-b)
+		case "*":
+			stackNums = append(stackNums, a*b)
+		case "/":
+			if b == 0 {
+				return fmt.Errorf("divide by zero")
+			}
+			stackNums = append(stackNums, a/b)
+		default:
+			return fmt.Errorf("unknown op")
+		}
+		return nil
+	}
+
+	prec := func(op string) int {
+		if op == "+" || op == "-" {
+			return 1
+		}
+		if op == "*" || op == "/" {
+			return 2
+		}
+		return 0
+	}
+
+	i := 0
+	for i < len(tokens) {
+		t := tokens[i]
+		switch t {
+		case "+", "-", "*", "/":
+			for len(stackOps) > 0 && prec(stackOps[len(stackOps)-1]) >= prec(t) {
+				if err := applyOp(); err != nil {
+					return nil, err
+				}
+			}
+			stackOps = append(stackOps, t)
+		case "(":
+			stackOps = append(stackOps, t)
+		case ")":
+			for len(stackOps) > 0 && stackOps[len(stackOps)-1] != "(" {
+				if err := applyOp(); err != nil {
+					return nil, err
+				}
+			}
+			if len(stackOps) == 0 {
+				return nil, fmt.Errorf("mismatched parentheses")
+			}
+			stackOps = stackOps[:len(stackOps)-1] // pop "("
+		default:
+			v, err := strconv.ParseFloat(t, 64)
+			if err != nil {
+				return nil, err
+			}
+			stackNums = append(stackNums, v)
+		}
+		i++
+	}
+
+	for len(stackOps) > 0 {
+		if stackOps[len(stackOps)-1] == "(" || stackOps[len(stackOps)-1] == ")" {
+			return nil, fmt.Errorf("mismatched parentheses")
+		}
+		if err := applyOp(); err != nil {
+			return nil, err
+		}
+	}
+
+	return stackNums, nil
 }
 
 func ensureExt(path, ext string) string {
@@ -1951,23 +2017,19 @@ func formatMoney(v int) string {
 		parts = append([]string{s[n-3 : n]}, parts...)
 		n -= 3
 		if n <= 3 {
-			parts = append([]string{s[0:n]}, parts...)
+			parts = append(parts, s[0:n])
+			break
 		}
+	}
+	// reverse parts because we appended in reverse order
+	for i, j := 0, len(parts)-1; i < j; i, j = i+1, j-1 {
+		parts[i], parts[j] = parts[j], parts[i]
 	}
 	return strings.Join(parts, ",")
 }
 
 func roundTaka(f float64) float64 {
 	return math.Round(f)
-}
-
-func openPrompt(m model, mode promptMode, defaultPath, placeholder string) (model, tea.Cmd) {
-	m.promptMode = mode
-	m.promptActive = true
-	m.prompt.SetValue(defaultPath)
-	m.prompt.Placeholder = placeholder
-	m.state = statePrompt
-	return m, nil
 }
 
 // method on model to open prompt (wrapper)
