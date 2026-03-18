@@ -1718,32 +1718,50 @@ func exportPDF(path string, r Report, cfg Config) error {
 
 	// Header: try to use logo.png in current directory (expected 124x124 px).
 	// Convert 124px @ 96 DPI -> mm: (124/96)*25.4 ≈ 32.75 mm
+	const margin = 12.0
 	logoSizeMM := (124.0 / 96.0) * 25.4
 	logoPath := "logo.png"
+	headerTop := margin
+	headerTextX := margin + logoSizeMM + 8
+	hasLogo := false
 	if _, err := os.Stat(logoPath); err == nil {
+		hasLogo = true
 		// place logo at left margin
-		pdf.ImageOptions(logoPath, 12, 12, logoSizeMM, logoSizeMM, false, gofpdf.ImageOptions{ImageType: "", ReadDpi: true}, 0, "")
-		pdf.SetXY(12+logoSizeMM+6, 14)
+		pdf.ImageOptions(logoPath, margin, margin, logoSizeMM, logoSizeMM, false, gofpdf.ImageOptions{ImageType: "", ReadDpi: true}, 0, "")
 	} else {
 		// fallback placeholder square
 		rC, gC, bC := hexToRGB(theme.Primary)
 		pdf.SetDrawColor(rC, gC, bC)
 		pdf.SetFillColor(rC, gC, bC)
-		pdf.Rect(12, 12, 22, 22, "DF")
+		pdf.Rect(margin, margin, 22, 22, "DF")
 		pdf.SetTextColor(255, 255, 255)
 		pdf.SetFont("Arial", "B", 14)
-		pdf.SetXY(16, 18)
+		pdf.SetXY(margin+4, margin+6)
 		pdf.CellFormat(14, 6, "TC", "", 0, "C", false, 0, "")
 		pdf.SetTextColor(0, 0, 0)
-		pdf.SetXY(40, 14)
+		headerTextX = margin + 28
 	}
 
 	pdf.SetFont("Arial", "B", 18)
-	pdf.CellFormat(0, 8, "Tax Companion Report", "", 1, "L", false, 0, "")
+	pdf.SetXY(headerTextX, headerTop+1)
+	pdf.CellFormat(0, 8, "Tax Companion Report", "", 0, "L", false, 0, "")
 	pdf.SetFont("Arial", "", 10)
-	pdf.CellFormat(0, 5, fmt.Sprintf("Prepared for: %s   |   Author: %s   |   GitHub: %s", appName, appAuthor, appGitHub), "", 1, "L", false, 0, "")
-	pdf.CellFormat(0, 5, fmt.Sprintf("Assessment year: %s   |   Generated: %s", r.TaxYear, r.GeneratedAt.Format("2006-01-02 15:04:05")), "", 1, "L", false, 0, "")
-	pdf.Ln(2)
+	pdf.SetXY(headerTextX, headerTop+9)
+	pdf.CellFormat(0, 5, fmt.Sprintf("Prepared for: %s   |   Author: %s   |   GitHub: %s", appName, appAuthor, appGitHub), "", 0, "L", false, 0, "")
+	pdf.SetXY(headerTextX, headerTop+14)
+	pdf.CellFormat(0, 5, fmt.Sprintf("Assessment year: %s   |   Generated: %s", r.TaxYear, r.GeneratedAt.Format("2006-01-02 15:04:05")), "", 0, "L", false, 0, "")
+
+	headerBottom := headerTop + 14 + 5
+	if hasLogo {
+		if candidate := headerTop + logoSizeMM; candidate > headerBottom {
+			headerBottom = candidate
+		}
+	} else {
+		if candidate := headerTop + 22; candidate > headerBottom {
+			headerBottom = candidate
+		}
+	}
+	pdf.SetY(headerBottom + 3)
 	drawRule(pdf)
 
 	section := func(title string) {
