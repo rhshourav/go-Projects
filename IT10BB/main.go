@@ -21,6 +21,41 @@ import (
 	"github.com/jung-kurt/gofpdf"
 )
 
+// Theme controls colors and watermark settings for PDF output.
+type Theme struct {
+	Primary          string
+	Secondary        string
+	WatermarkText    string
+	WatermarkOpacity float64
+	WatermarkSize    float64
+	WatermarkAngle   float64
+}
+
+var theme = Theme{
+	Primary:          "#0B6B3A",
+	Secondary:        "#ECFDF5",
+	WatermarkText:    "TAX COMPANION",
+	WatermarkOpacity: 0.08,
+	WatermarkSize:    48.0,
+	WatermarkAngle:   45.0,
+}
+
+// hexToRGB converts a 6-digit hex color string (e.g. "#0B6B3A") to r,g,b ints.
+func hexToRGB(hex string) (int, int, int) {
+	hex = strings.TrimPrefix(hex, "#")
+	if len(hex) != 6 {
+		return 0, 0, 0
+	}
+	v, err := strconv.ParseInt(hex, 16, 32)
+	if err != nil {
+		return 0, 0, 0
+	}
+	r := int((v >> 16) & 0xFF)
+	g := int((v >> 8) & 0xFF)
+	b := int(v & 0xFF)
+	return r, g, b
+}
+
 const (
 	appName   = "Tax Companion (Bangladesh)"
 	appAuthor = "rhshourav"
@@ -96,14 +131,17 @@ type Report struct {
 
 	TaxYear string
 
-	SalaryInput     float64
-	BonusIncluded   bool
-	CustomSalary    bool
-	BaseGrossSalary float64
-	BonusAmount     float64
-	TotalComp       float64
-	SalaryExempt    float64
-	TaxableSalary   float64
+	SalaryInput         float64
+	BonusIncluded       bool
+	CustomSalary        bool
+	BaseGrossSalary     float64
+	HouseRentAllowance  float64
+	MedicalAllowance    float64
+	ConveyanceAllowance float64
+	BonusAmount         float64
+	TotalComp           float64
+	SalaryExempt        float64
+	TaxableSalary       float64
 
 	CurrentTaxBeforeRebate float64
 	RebateEligibleInvest   float64
@@ -921,6 +959,9 @@ func buildReport(m model) Report {
 	}
 
 	r.BaseGrossSalary = baseGross
+	r.HouseRentAllowance = hra
+	r.MedicalAllowance = med
+	r.ConveyanceAllowance = trans
 	r.BonusAmount = bonus
 	r.TotalComp = totalComp
 	r.SalaryExempt = math.Min(totalComp/3.0, m.config.SalaryExemptionCap)
@@ -1119,6 +1160,9 @@ func formatReport(r Report) string {
 
 	sb.WriteString(subTitleStyle.Render(" SALARY / INCOME ") + "\n")
 	sb.WriteString(kvLine("Annual salary input", r.SalaryInput))
+	sb.WriteString(kvLine("House rent allowance", r.HouseRentAllowance))
+	sb.WriteString(kvLine("Medical allowance", r.MedicalAllowance))
+	sb.WriteString(kvLine("Conveyance allowance", r.ConveyanceAllowance))
 	if r.CustomSalary {
 		sb.WriteString(kvLine("Basic gross salary", r.BaseGrossSalary))
 		sb.WriteString(kvLine("Festival bonus (one-month %)", r.BonusAmount))
@@ -1565,6 +1609,9 @@ func exportCSV(path string, r Report) error {
 		{"Tax year", r.TaxYear},
 		{"Annual salary input", formatMoney(int(roundTaka(r.SalaryInput)))},
 		{"Base gross salary", formatMoney(int(roundTaka(r.BaseGrossSalary)))},
+		{"House rent allowance", formatMoney(int(roundTaka(r.HouseRentAllowance)))},
+		{"Medical allowance", formatMoney(int(roundTaka(r.MedicalAllowance)))},
+		{"Conveyance allowance", formatMoney(int(roundTaka(r.ConveyanceAllowance)))},
 		{"Festival bonus", formatMoney(int(roundTaka(r.BonusAmount)))},
 		{"Total compensation", formatMoney(int(roundTaka(r.TotalComp)))},
 		{"Salary exemption", formatMoney(int(roundTaka(r.SalaryExempt)))},
@@ -1614,13 +1661,28 @@ func exportMarkdown(path string, r Report) error {
 	sb.WriteString("| Field | Value |\n|---|---:|\n")
 	sb.WriteString(fmt.Sprintf("| Annual salary input | Tk %s |\n", formatMoney(int(roundTaka(r.SalaryInput)))))
 	sb.WriteString(fmt.Sprintf("| Base gross salary | Tk %s |\n", formatMoney(int(roundTaka(r.BaseGrossSalary)))))
+	sb.WriteString(fmt.Sprintf("| House rent allowance | Tk %s |\n", formatMoney(int(roundTaka(r.HouseRentAllowance)))))
+	sb.WriteString(fmt.Sprintf("| Medical allowance | Tk %s |\n", formatMoney(int(roundTaka(r.MedicalAllowance)))))
+	sb.WriteString(fmt.Sprintf("| Conveyance allowance | Tk %s |\n", formatMoney(int(roundTaka(r.ConveyanceAllowance)))))
 	sb.WriteString(fmt.Sprintf("| Festival bonus | Tk %s |\n", formatMoney(int(roundTaka(r.BonusAmount)))))
 	sb.WriteString(fmt.Sprintf("| Total compensation | Tk %s |\n", formatMoney(int(roundTaka(r.TotalComp)))))
 	sb.WriteString(fmt.Sprintf("| Salary exemption | Tk %s |\n", formatMoney(int(roundTaka(r.SalaryExempt)))))
 	sb.WriteString(fmt.Sprintf("| Taxable income | Tk %s |\n", formatMoney(int(roundTaka(r.TaxableSalary)))))
 	sb.WriteString(fmt.Sprintf("| Tax before rebate | Tk %s |\n", formatMoney(int(roundTaka(r.CurrentTaxBeforeRebate)))))
-	sb.WriteString(fmt.Sprintf("| Rebate | Tk %s |\n", formatMoney(int(roundTaka(r.RebateAmount)))))
-	sb.WriteString(fmt.Sprintf("| Final tax | Tk %s |\n\n", formatMoney(int(roundTaka(r.FinalTax)))))
+	sb.WriteString(fmt.Sprintf("| Eligible investment | Tk %s |\n", formatMoney(int(roundTaka(r.RebateEligibleInvest)))))
+	sb.WriteString(fmt.Sprintf("| Tax rebate | Tk %s |\n", formatMoney(int(roundTaka(r.RebateAmount)))))
+	sb.WriteString(fmt.Sprintf("| Tax after rebate | Tk %s |\n", formatMoney(int(roundTaka(r.CurrentTaxAfterRebate)))))
+	sb.WriteString(fmt.Sprintf("| Previous year tax | Tk %s |\n", formatMoney(int(roundTaka(r.PreviousTax)))))
+	sb.WriteString(fmt.Sprintf("| Surcharge amount | Tk %s |\n", formatMoney(int(roundTaka(r.SurchargeAmount)))))
+	sb.WriteString(fmt.Sprintf("| Final tax | Tk %s |\n", formatMoney(int(roundTaka(r.FinalTax)))))
+	sb.WriteString(fmt.Sprintf("| Total assets | Tk %s |\n", formatMoney(int(roundTaka(r.TotalAssets)))))
+	sb.WriteString(fmt.Sprintf("| Total liabilities | Tk %s |\n", formatMoney(int(roundTaka(r.TotalLiabilities)))))
+	sb.WriteString(fmt.Sprintf("| Net wealth (used) | Tk %s |\n", formatMoney(int(roundTaka(r.NetWealthCurrent)))))
+	sb.WriteString(fmt.Sprintf("| Opening net wealth | Tk %s |\n", formatMoney(int(roundTaka(r.OpeningNetWealth)))))
+	sb.WriteString(fmt.Sprintf("| Wealth increase | Tk %s |\n", formatMoney(int(roundTaka(r.WealthIncrease)))))
+	sb.WriteString(fmt.Sprintf("| Estimated after-tax savings | Tk %s |\n", formatMoney(int(roundTaka(r.ExpectedSavings)))))
+	sb.WriteString(fmt.Sprintf("| Wealth status | %s |\n", r.WealthStatus))
+	sb.WriteString(fmt.Sprintf("| Audit risk | %s |\n\n", r.AuditRisk))
 
 	if r.TotalExpense > 0 {
 		sb.WriteString("## Expense allocation\n\n")
@@ -1664,8 +1726,9 @@ func exportPDF(path string, r Report, cfg Config) error {
 		pdf.SetXY(12+logoSizeMM+6, 14)
 	} else {
 		// fallback placeholder square
-		pdf.SetDrawColor(11, 107, 58)
-		pdf.SetFillColor(11, 107, 58)
+		rC, gC, bC := hexToRGB(theme.Primary)
+		pdf.SetDrawColor(rC, gC, bC)
+		pdf.SetFillColor(rC, gC, bC)
 		pdf.Rect(12, 12, 22, 22, "DF")
 		pdf.SetTextColor(255, 255, 255)
 		pdf.SetFont("Arial", "B", 14)
@@ -1685,8 +1748,10 @@ func exportPDF(path string, r Report, cfg Config) error {
 
 	section := func(title string) {
 		pdf.Ln(1)
-		pdf.SetFillColor(236, 253, 245)
-		pdf.SetTextColor(11, 107, 58)
+		r2, g2, b2 := hexToRGB(theme.Secondary)
+		pdf.SetFillColor(r2, g2, b2)
+		rC, gC, bC := hexToRGB(theme.Primary)
+		pdf.SetTextColor(rC, gC, bC)
 		pdf.SetFont("Arial", "B", 12)
 		pdf.CellFormat(0, 8, " "+title+" ", "1", 1, "L", true, 0, "")
 		pdf.SetTextColor(0, 0, 0)
@@ -1701,6 +1766,9 @@ func exportPDF(path string, r Report, cfg Config) error {
 	section("Salary / Income")
 	kv("Annual salary input", "Tk "+formatMoney(int(roundTaka(r.SalaryInput))))
 	kv("Base gross salary", "Tk "+formatMoney(int(roundTaka(r.BaseGrossSalary))))
+	kv("House rent allowance", "Tk "+formatMoney(int(roundTaka(r.HouseRentAllowance))))
+	kv("Medical allowance", "Tk "+formatMoney(int(roundTaka(r.MedicalAllowance))))
+	kv("Conveyance allowance", "Tk "+formatMoney(int(roundTaka(r.ConveyanceAllowance))))
 	kv("Festival bonus", "Tk "+formatMoney(int(roundTaka(r.BonusAmount))))
 	kv("Total compensation", "Tk "+formatMoney(int(roundTaka(r.TotalComp))))
 	kv("Salary exemption", "Tk "+formatMoney(int(roundTaka(r.SalaryExempt))))
@@ -1767,32 +1835,35 @@ func exportPDF(path string, r Report, cfg Config) error {
 }
 
 // addWatermark draws a light rotated watermark text on the page center.
-func addWatermark(pdf *gofpdf.Fpdf, text string) {
-	// Save graphics state
-	pdf.SetFont("Arial", "B", 48)
-	// light gray
-	pdf.SetTextColor(200, 200, 200)
-	// semi-transparent
-	pdf.SetAlpha(0.08, "Normal")
 
+func addWatermark(pdf *gofpdf.Fpdf, text string) {
+	// Use theme values
+	pdf.SetFont("Arial", "B", theme.WatermarkSize)
+	// light gray as default
+	r, g, b := 200, 200, 200
+	// let primary color influence watermark slightly if theme primary provided
+	if theme.Primary != "" {
+		r2, g2, b2 := hexToRGB(theme.Primary)
+		// pick a lighter variant for watermark
+		r = (r2 + 255) / 2
+		g = (g2 + 255) / 2
+		b = (b2 + 255) / 2
+	}
+	pdf.SetTextColor(r, g, b)
+	// semi-transparent
+	pdf.SetAlpha(theme.WatermarkOpacity, "Normal")
 	// Get page dimensions
 	pageW, pageH := pdf.GetPageSize()
-	// center coordinates
 	cx := pageW / 2.0
 	cy := pageH / 2.0
-
 	// Rotate around center and write text
 	pdf.TransformBegin()
-	// rotate 45 degrees around center
-	pdf.TransformRotate(45, cx, cy)
-	// approximate width of string in current font/size
+	pdf.TransformRotate(theme.WatermarkAngle, cx, cy)
 	wd := pdf.GetStringWidth(text)
-	// position text centered
 	x := cx - wd/2.0
 	y := cy
 	pdf.Text(x, y, text)
 	pdf.TransformEnd()
-
 	// reset alpha to full
 	pdf.SetAlpha(1.0, "Normal")
 	// reset color to black
@@ -1802,7 +1873,8 @@ func addWatermark(pdf *gofpdf.Fpdf, text string) {
 func drawRule(pdf *gofpdf.Fpdf) {
 	x1, y := pdf.GetX(), pdf.GetY()
 	_ = x1
-	pdf.SetDrawColor(11, 107, 58)
+	rC, gC, bC := hexToRGB(theme.Primary)
+	pdf.SetDrawColor(rC, gC, bC)
 	pdf.SetLineWidth(0.4)
 	pdf.Line(12, y, 198, y)
 	pdf.Ln(3)
